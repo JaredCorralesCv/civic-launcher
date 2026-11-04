@@ -1,0 +1,9 @@
+<resources>
+    <!-- Tema base sin barra de acción. Compose dibuja todo lo demás. -->
+    <style name="Theme.CivicLauncher" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+    </style>
+    <color name="bg">#FF0B0D10</color>
+</resources>
