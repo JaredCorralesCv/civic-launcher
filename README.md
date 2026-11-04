@@ -15,6 +15,14 @@ Civic ya es un launcher completo:
 
 El botón de inicio siempre regresa a Inicio y "atrás" nunca sale del launcher. Las barras del sistema se vuelven a esconder solas si el teclado las muestra.
 
+### OBD (Fase 3, versión 0.3.0)
+
+- **Motor** (`obd/ObdEngine.kt`, Kotlin puro): conecta, detecta protocolo y PIDs soportados, y lee en ciclo con prioridades (rápidos en cada vuelta, medios cada 3, lentos cada 10). Salta los PIDs que el carro no tiene. Si se cae el Bluetooth reintenta a 1, 2, 4… hasta 30 s. Si quitas la llave pasa a "carro apagado" y sigue leyendo la batería.
+- **Bluetooth SPP** (`launcher/obd/BluetoothSppTransport.kt`): prueba sin emparejar, con emparejamiento y por canal 1.
+- **Servicio en primer plano** (`ObdService`): mantiene la conexión mientras usas Android Auto. Se pausa al apagar la pantalla y vuelve al encenderla.
+- **Interfaz:** elegir adaptador o simulador (Vehículo → Adaptador, o Ajustes → OBD), medidores en vivo, resumen en Inicio, y velocidad del OBD con prioridad sobre el GPS.
+- **Pruebas:** 16 en `:obd` (parser, sesión y motor con tiempo virtual: llave quitada y puesta, caída de Bluetooth, prioridades).
+
 ### Actualizaciones desde GitHub
 
 1. Crea un repositorio **público** en GitHub.
@@ -120,7 +128,7 @@ app/src/main/java/com/civiclauncher/app/
 | 0 | Diagnóstico ✅ terminado (2026-11-05) |
 | 1 | Base: módulos `:app` y `:obd`, sistema de diseño (Inter + Phosphor), actualización de librerías ✅ terminado (2026-11-05) |
 | 2 ✅ terminado (2026-11-05) | Launcher básico: reloj, accesos grandes (Android Auto, radio, cámara, Bluetooth), apps, velocímetro GPS y actualización desde GitHub (con WiFi de casa) |
-| **3** ← *siguiente* | Motor OBD2 con simulador, por **Bluetooth clásico (SPP)**. Reconexión automática al despertar o reiniciar. |
+| 3 ✅ código listo (2026-11-05) · falta la prueba con el adaptador real | Motor OBD2 con simulador, por **Bluetooth clásico (SPP)**. Reconexión automática al despertar o reiniciar. |
 | 4 | Pantalla del vehículo: medidores, códigos de falla, alertas, consumo y viajes |
 | 5 | Alertas encima de Android Auto (burbuja flotante) |
 | 6 | Pulido y Baseline Profiles (`:baselineprofile`) |

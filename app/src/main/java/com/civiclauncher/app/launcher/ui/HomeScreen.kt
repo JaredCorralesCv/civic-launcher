@@ -56,6 +56,8 @@ fun HomeScreen(onOpen: (Dest) -> Unit) {
         // Izquierda: hora, fecha y velocidad.
         Column(Modifier.width(400.dp).fillMaxHeight()) {
             ClockBlock()
+            Spacer(Modifier.height(Civic.space.l))
+            ObdSummary(onOpen = { onOpen(Dest.VEHICLE) })
             Spacer(Modifier.weight(1f))
             TimeZoneWarning()
             SpeedCard()
@@ -124,16 +126,62 @@ private fun TimeZoneWarning() {
     Spacer(Modifier.height(Civic.space.l))
 }
 
-/** Velocímetro GPS. En la Fase 3 la velocidad del OBD tendrá prioridad. */
+/** Motor y batería de un vistazo, solo si hay OBD configurado. Toca para ir a Vehículo. */
+@Composable
+private fun ObdSummary(onOpen: () -> Unit) {
+    val repo = LocalContext.current.container.obd
+    val config by repo.config.collectAsStateWithLifecycle()
+    if (config.mode == com.civiclauncher.app.launcher.obd.ObdMode.NONE) return
+    val state by repo.state.collectAsStateWithLifecycle()
+    val data by repo.data.collectAsStateWithLifecycle()
+    val coolant = data[com.civiclauncher.obd.Pids.COOLANT_TEMP].fresh()?.value
+    val battery = data.battery.fresh(30_000)?.value
+    CivicCard(Modifier.fillMaxWidth(), onClick = onOpen) {
+        ObdStatusPill(state, config)
+        Spacer(Modifier.height(Civic.space.m))
+        Row(horizontalArrangement = Arrangement.spacedBy(Civic.space.xl)) {
+            MiniValue("MOTOR", coolant?.let { "%.0f".format(it) } ?: "--", "°C", if ((coolant ?: 0.0) >= 105) Civic.colors.bad else Civic.colors.text)
+            MiniValue("BATERÍA", battery?.let { "%.1f".format(it) } ?: "--", "V", if (battery != null && battery < 11.8) Civic.colors.bad else Civic.colors.text)
+        }
+    }
+}
+
+@Composable
+private fun MiniValue(label: String, value: String, unit: String, color: androidx.compose.ui.graphics.Color) {
+    Column {
+        Text(label, style = Civic.type.caption, color = Civic.colors.textFaint)
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(value, style = Civic.type.number, color = color)
+            Spacer(Modifier.width(Civic.space.xs))
+            Text(unit, style = Civic.type.gaugeUnit, color = Civic.colors.textDim, modifier = Modifier.padding(bottom = 4.dp))
+        }
+    }
+}
+
+/** Velocímetro: usa la velocidad del OBD si está conectado (más precisa) y si no, la del GPS. */
 @Composable
 private fun SpeedCard() {
     val ctx = LocalContext.current
     val c = ctx.container
     val gps by c.gps.speed.collectAsStateWithLifecycle()
+    val obdState by c.obd.state.collectAsStateWithLifecycle()
+    val obdData by c.obd.data.collectAsStateWithLifecycle()
+    val obdSpeed = if (obdState is com.civiclauncher.obd.EngineState.Connected) obdData[com.civiclauncher.obd.Pids.SPEED].fresh(5_000)?.value else null
 
     CivicCard(Modifier.fillMaxWidth()) {
-        Text("VELOCIDAD", style = Civic.type.caption, color = Civic.colors.textFaint)
+        Text(if (obdSpeed != null) "VELOCIDAD · OBD" else "VELOCIDAD · GPS", style = Civic.type.caption, color = Civic.colors.textFaint)
         when {
+            obdSpeed != null -> {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        "%.0f".format(obdSpeed),
+                        style = Civic.type.gaugeValue.copy(fontSize = 72.sp, lineHeight = 80.sp),
+                        color = Civic.colors.text,
+                    )
+                    Spacer(Modifier.width(Civic.space.s))
+                    Text("km/h", style = Civic.type.label, color = Civic.colors.textDim, modifier = Modifier.padding(bottom = 14.dp))
+                }
+            }
             !gps.permission -> {
                 Spacer(Modifier.height(Civic.space.s))
                 Text("Permite la ubicación para ver la velocidad por GPS.", style = Civic.type.bodySmall, color = Civic.colors.textDim)

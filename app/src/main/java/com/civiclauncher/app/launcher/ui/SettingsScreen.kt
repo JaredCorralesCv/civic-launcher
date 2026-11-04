@@ -40,6 +40,7 @@ import com.civiclauncher.app.BuildConfig
 import com.civiclauncher.app.container
 import com.civiclauncher.app.launcher.data.ThemeMode
 import com.civiclauncher.app.launcher.data.VendorApps
+import com.civiclauncher.app.launcher.obd.ObdMode
 import com.civiclauncher.app.launcher.update.UpdateState
 import com.civiclauncher.app.ui.design.ButtonKind
 import com.civiclauncher.app.ui.design.Civic
@@ -110,6 +111,9 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit) {
             ) { open(Intent(Settings.ACTION_DATE_SETTINGS)) }
         }
 
+        item { SectionHeader("OBD") }
+        item { ObdSettings() }
+
         item { SectionHeader("Carro") }
         item { SettingRow(P.SteeringWheel, "Botones del volante", "App del fabricante para aprender los botones (SWC)") { openVendor(VendorApps.STEERING_WHEEL, "SWC") } }
         item { SettingRow(P.CarProfile, "Configuraciones del vehículo", "Ajustes del fabricante para el carro") { openVendor(VendorApps.CAR_SETTINGS, "La app") } }
@@ -168,6 +172,38 @@ private fun SettingRow(
             Text(subtitle, style = Civic.type.bodySmall, color = Civic.colors.textDim)
         }
         if (showChevron) Icon(P.CaretRight, null, tint = Civic.colors.textFaint, modifier = Modifier.size(22.dp))
+    }
+}
+
+@Composable
+private fun ObdSettings() {
+    val repo = LocalContext.current.container.obd
+    val config by repo.config.collectAsStateWithLifecycle()
+    val state by repo.state.collectAsStateWithLifecycle()
+    var picker by remember { mutableStateOf(false) }
+    val (status, tone) = obdStatus(state, config)
+
+    Column(verticalArrangement = Arrangement.spacedBy(Civic.space.s)) {
+        SettingRow(
+            P.Bluetooth,
+            when (config.mode) {
+                ObdMode.NONE -> "Elegir adaptador"
+                ObdMode.SIMULATOR -> "Simulador (demo)"
+                ObdMode.BLUETOOTH -> config.name ?: config.address ?: "Adaptador"
+            },
+            if (config.mode == ObdMode.BLUETOOTH) "${config.address} · $status" else status,
+            tone = if (tone == Tone.Bad) Tone.Warn else Tone.Neutral,
+        ) { picker = true }
+        if (config.mode != ObdMode.NONE) {
+            SettingRow(P.Power, "Desconectar OBD", "Deja de buscar el adaptador y apaga la notificación", showChevron = false) { repo.disable() }
+        }
+    }
+    if (picker) {
+        AdapterPickerDialog(
+            onDismiss = { picker = false },
+            onPick = { repo.useBluetooth(it.address, it.name); picker = false },
+            onSimulator = { repo.useSimulator(); picker = false },
+        )
     }
 }
 

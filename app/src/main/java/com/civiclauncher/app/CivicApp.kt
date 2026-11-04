@@ -11,6 +11,9 @@ import com.civiclauncher.app.launcher.data.AppsRepository
 import com.civiclauncher.app.launcher.data.ClockRepository
 import com.civiclauncher.app.launcher.data.GpsSpeedRepository
 import com.civiclauncher.app.launcher.data.LauncherPrefs
+import com.civiclauncher.app.launcher.obd.ObdMode
+import com.civiclauncher.app.launcher.obd.ObdRepository
+import com.civiclauncher.app.launcher.obd.ObdService
 import com.civiclauncher.app.launcher.update.Updater
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,6 +26,8 @@ class CivicApp : Application() {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
+        // Cada vez que la app arranca (encendido, despertar, o si el sistema la cerró), reanuda el OBD.
+        if (container.obd.config.value.mode != ObdMode.NONE) ObdService.start(this)
         // El arranque rápido de Autochips mata las apps al quitar la llave y no siempre las revive.
         // Cada vez que el proceso renace (por la pantalla, un aviso o el sistema), reanudamos el monitor.
         if (container.prefs.accMonitorEnabled) {
@@ -47,6 +52,9 @@ class AppContainer(context: Context) {
     val gps by lazy { GpsSpeedRepository(context, appScope) }
     val apps by lazy { AppsRepository(context, appScope) }
     val updater by lazy { Updater(context, appScope) }
+
+    // OBD (Fase 3)
+    val obd by lazy { ObdRepository(context, appScope) }
 
     // Diagnóstico (Fase 0)
     val prefs = DiagPrefs(context)

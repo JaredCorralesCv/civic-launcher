@@ -49,6 +49,50 @@ object ElmParser {
         return ObdResult.Error("No se encontró $expected en la respuesta", raw)
     }
 
+    /**
+     * Respuesta a 0100 / 0120 / 0140: 4 bytes donde cada bit dice si existe un PID.
+     * Bit más alto del primer byte = PID base+1. Devuelve null si el carro no respondió.
+     */
+    fun parseSupported(raw: String, base: Int): Set<Int>? {
+        val lines = cleanLines(raw)
+        if (lines.any { it == "NO DATA" } || ERRORS.any { e -> lines.any { it.startsWith(e) } }) return null
+        val expected = "41%02X".format(base)
+        for (line in lines) {
+            val hex = line.replace(" ", "")
+            val idx = hex.indexOf(expected)
+            if (idx < 0 || hex.length < idx + expected.length + 8) continue
+            val bits = hex.substring(idx + expected.length, idx + expected.length + 8).toLongOrNull(16) ?: continue
+            return (0 until 32).filter { i -> (bits shr (31 - i)) and 1L == 1L }.map { base + it + 1 }.toSet()
+        }
+        return null
+    }
+
+    /** Si el carro no contesta (llave quitada o computadora dormida), el ELM dice alguna de estas. */
+    fun isCarSilent(raw: String): Boolean {
+        val lines = cleanLines(raw)
+        return lines.isEmpty() || lines.any { l ->
+            l == "NO DATA" || l.startsWith("UNABLE TO CONNECT") || l.startsWith("CAN ERROR") ||
+                l.startsWith("BUS INIT") && l.contains("ERROR") || l.startsWith("BUS ERROR") || l.startsWith("STOPPED")
+        }
+    }
+
+    /** ATDPN: número del protocolo detectado. "A6" = automático, CAN 11 bits 500 kbps. */
+    fun protocolName(raw: String): String {
+        val code = cleanLines(raw).firstOrNull()?.removePrefix("A")?.trim() ?: return "desconocido"
+        return when (code) {
+            "1" -> "SAE J1850 PWM"
+            "2" -> "SAE J1850 VPW"
+            "3" -> "ISO 9141-2"
+            "4" -> "ISO 14230 KWP (5 baud)"
+            "5" -> "ISO 14230 KWP (rápido)"
+            "6" -> "CAN 11 bits 500 kbps"
+            "7" -> "CAN 29 bits 500 kbps"
+            "8" -> "CAN 11 bits 250 kbps"
+            "9" -> "CAN 29 bits 250 kbps"
+            else -> "protocolo $code"
+        }
+    }
+
     /** Respuesta de ATRV, por ejemplo "12.6V". Es el voltaje en el conector OBD (la batería). */
     fun parseVoltage(raw: String): ObdResult {
         val line = cleanLines(raw).firstOrNull() ?: return ObdResult.Error("Respuesta vacía", raw)

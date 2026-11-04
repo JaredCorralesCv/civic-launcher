@@ -14,9 +14,12 @@ interface ObdTransport {
     suspend fun close()
 }
 
+/** Lo que se sabe del carro después de la primera consulta. */
+data class Detection(val protocol: String, val supported: Set<Int>)
+
 /**
  * Habla con un ELM327: lo configura y hace consultas una por una (el ELM no acepta dos a la vez).
- * El motor completo con prioridades y reconexión llega en la Fase 3; aquí está la base.
+ * [ObdEngine] decide qué preguntar y cuándo.
  */
 class ElmSession(private val transport: ObdTransport) {
     private val lock = Mutex()
@@ -32,6 +35,22 @@ class ElmSession(private val transport: ObdTransport) {
         INIT_COMMANDS.forEach { transport.send(it) }
     }
 
+    /**
+     * Primera consulta al carro: el ELM busca el protocolo (puede tardar varios segundos) y
+     * aprendemos qué datos existen. Devuelve null si el carro no contesta (llave quitada).
+     */
+    suspend fun detect(): Detection? = lock.withLock {
+        val first = transport.send("0100", timeoutMs = 12_000)
+        if (ElmParser.isCarSilent(first)) return@withLock null
+        val supported = ElmParser.parseSupported(first, 0x00)?.toMutableSet() ?: return@withLock null
+        // Los PIDs 0x20 y 0x40 indican si hay otra tanda de PIDs que preguntar.
+        for (base in listOf(0x20, 0x40)) {
+            if (base !in supported) break
+            ElmParser.parseSupported(transport.send("01%02X".format(base)), base)?.let { supported += it } ?: break
+        }
+        Detection(ElmParser.protocolName(transport.send("ATDPN")), supported)
+    }
+
     suspend fun query(spec: PidSpec): ObdResult = lock.withLock {
         ElmParser.parsePid(transport.send(spec.command), spec)
     }
@@ -45,8 +64,9 @@ class ElmSession(private val transport: ObdTransport) {
     companion object {
         /**
          * ATE0 sin eco · ATL0 sin saltos de línea extra · ATS0 sin espacios · ATH0 sin encabezados ·
-         * ATSP0 protocolo automático (tu Civic 2008 usa CAN 11 bits a 500 kbps, ATSP6).
+         * ATAT1 tiempos de espera adaptativos (más rápido) · ATSP0 protocolo automático
+         * (tu Civic 2008 debería salir como CAN 11 bits 500 kbps).
          */
-        val INIT_COMMANDS = listOf("ATE0", "ATL0", "ATS0", "ATH0", "ATSP0")
+        val INIT_COMMANDS = listOf("ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATSP0")
     }
 }
