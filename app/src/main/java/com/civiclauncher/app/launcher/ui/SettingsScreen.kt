@@ -52,7 +52,7 @@ import com.civiclauncher.app.ui.design.SectionHeader
 import com.civiclauncher.app.ui.design.Tone
 
 @Composable
-fun SettingsScreen(onOpenDiagnostics: () -> Unit) {
+fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
     val ctx = LocalContext.current
     val c = ctx.container
     val theme by c.launcherPrefs.themeMode.collectAsStateWithLifecycle()
@@ -125,6 +125,7 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit) {
                 open(Intent(Settings.ACTION_HOME_SETTINGS))
             }
         }
+        item { SettingRow(P.Wrench, "Limpieza", "Desactiva apps preinstaladas que no usas para liberar memoria") { onOpenCleanup() } }
         item { SettingRow(P.GearSix, "Ajustes de Android", "Configuración general de la pantalla") { open(Intent(Settings.ACTION_SETTINGS)) } }
         item { SettingRow(P.WifiHigh, "WiFi", "Para buscar actualizaciones con el WiFi de tu casa") { open(Intent(Settings.ACTION_WIFI_SETTINGS)) } }
 

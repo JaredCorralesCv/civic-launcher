@@ -56,6 +56,9 @@ class AppContainer(context: Context) {
     // OBD (Fase 3)
     val obd by lazy { ObdRepository(context, appScope) }
 
+    // Limpieza de apps preinstaladas
+    val cleanup by lazy { com.civiclauncher.app.launcher.cleanup.CleanupRepository(context, appScope, prefs) }
+
     // Diagnóstico (Fase 0)
     val prefs = DiagPrefs(context)
     val diagStore by lazy { DiagStore(context) }

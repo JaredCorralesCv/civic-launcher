@@ -38,7 +38,7 @@ import com.civiclauncher.app.ui.design.PhosphorIcons as P
 import kotlinx.coroutines.flow.Flow
 import java.util.Calendar
 
-enum class Dest { HOME, VEHICLE, APPS, SETTINGS, DIAG }
+enum class Dest { HOME, VEHICLE, APPS, SETTINGS, CLEANUP, DIAG }
 
 /**
  * Raíz del launcher: dock lateral + pantalla activa.
@@ -55,7 +55,12 @@ fun LauncherRoot(homePresses: Flow<Unit>) {
 
     LaunchedEffect(Unit) { homePresses.collect { dest = Dest.HOME } }
     // En un launcher, "atrás" nunca debe sacarte de la pantalla de inicio.
-    BackHandler { if (dest != Dest.HOME) dest = Dest.HOME }
+    BackHandler {
+        dest = when (dest) {
+            Dest.CLEANUP -> Dest.SETTINGS
+            else -> Dest.HOME
+        }
+    }
 
     // Pedimos la ubicación una sola vez para el velocímetro GPS.
     val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -81,7 +86,11 @@ fun LauncherRoot(homePresses: Flow<Unit>) {
                     Dest.HOME -> HomeScreen(onOpen = { dest = it })
                     Dest.VEHICLE -> VehicleScreen()
                     Dest.APPS -> AppsScreen()
-                    Dest.SETTINGS -> SettingsScreen(onOpenDiagnostics = { dest = Dest.DIAG })
+                    Dest.SETTINGS -> SettingsScreen(
+                        onOpenDiagnostics = { dest = Dest.DIAG },
+                        onOpenCleanup = { dest = Dest.CLEANUP },
+                    )
+                    Dest.CLEANUP -> CleanupScreen(onBack = { dest = Dest.SETTINGS })
                     Dest.DIAG -> Unit
                 }
             }
@@ -103,7 +112,7 @@ private fun Dock(current: Dest, onSelect: (Dest) -> Unit) {
         DockItem(P.Gauge, P.GaugeFill, "Vehículo", current == Dest.VEHICLE, { onSelect(Dest.VEHICLE) })
         DockItem(P.SquaresFour, P.SquaresFourFill, "Apps", current == Dest.APPS, { onSelect(Dest.APPS) })
         Spacer(Modifier.weight(1f))
-        DockItem(P.GearSix, P.GearSixFill, "Ajustes", current == Dest.SETTINGS, { onSelect(Dest.SETTINGS) })
+        DockItem(P.GearSix, P.GearSixFill, "Ajustes", current == Dest.SETTINGS || current == Dest.CLEANUP, { onSelect(Dest.SETTINGS) })
     }
 }
 
