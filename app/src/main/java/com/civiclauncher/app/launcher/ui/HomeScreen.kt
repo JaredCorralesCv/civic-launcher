@@ -80,7 +80,7 @@ fun HomeScreen(onOpen: (Dest) -> Unit) {
         Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(Civic.space.l)) {
             VehicleCard(Modifier.weight(1f).fillMaxHeight(), onClick = { onOpen(Dest.VEHICLE) })
             MapCard(Modifier.weight(1.2f).fillMaxHeight(), onOpen = { onOpen(Dest.MAP) })
-            MusicCard(Modifier.weight(1f).fillMaxHeight())
+            MusicCard(Modifier.weight(1f).fillMaxHeight(), onOpen = { onOpen(Dest.MUSIC) })
         }
     }
 }

@@ -38,7 +38,7 @@ import com.civiclauncher.app.ui.design.PhosphorIcons as P
 import kotlinx.coroutines.flow.Flow
 import java.util.Calendar
 
-enum class Dest { HOME, VEHICLE, MAP, APPS, SETTINGS, CLEANUP, DIAG }
+enum class Dest { HOME, VEHICLE, MAP, MUSIC, APPS, SETTINGS, CLEANUP, DIAG }
 
 /**
  * Raíz del launcher: dock lateral + pantalla activa.
@@ -86,6 +86,7 @@ fun LauncherRoot(homePresses: Flow<Unit>) {
                     Dest.HOME -> HomeScreen(onOpen = { dest = it })
                     Dest.VEHICLE -> VehicleScreen()
                     Dest.MAP -> com.civiclauncher.app.launcher.map.MapScreen(night = night)
+                    Dest.MUSIC -> MusicScreen()
                     Dest.APPS -> AppsScreen()
                     Dest.SETTINGS -> SettingsScreen(
                         onOpenDiagnostics = { dest = Dest.DIAG },

@@ -91,6 +91,67 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
 
     private val sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener { list -> choose(list.orEmpty()) }
 
+    // ------------------------------------------------------------------ Bluetooth del celular
+    //
+    // Lo que se vio en la pantalla (8.1, Autochips):
+    //  * La sesión "com.android.bluetooth" (A2dpMediaBrowserService) trae canción, artista y avance.
+    //  * Si otra app (la radio) toma el audio, el Bluetooth pierde el "foco" y, desde ese momento,
+    //    cada vez que el celular empieza a sonar la pantalla le manda pausa (A2dpSinkStreamHandler).
+    //    Por eso Spotify se detenía al darle play en el celular.
+    //  * Un play desde la pantalla (transportControls.play) recupera el foco y sí suena.
+    //  * Además, el gestor de fuentes del fabricante (SourceService) debe tener al Bluetooth como
+    //    fuente; el aviso "net.easyconn.a2dp.acquire" lo cambia sin abrir la app "Música BT".
+
+    private var bt: MediaController? = null
+    private var lastBtResume = 0L
+
+    private val btCallback = object : MediaController.Callback() {
+        override fun onPlaybackStateChanged(state: PlaybackState?) {
+            // El celular empezó a sonar (le diste play en el teléfono). Si la pantalla no tiene al
+            // Bluetooth como fuente, lo pausaría enseguida: lo tomamos y confirmamos el play.
+            if (state?.state == PlaybackState.STATE_PLAYING && SysProp.get("sys.sourcing.package") != VendorApps.BLUETOOTH) {
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastBtResume > 4_000) {
+                    lastBtResume = now
+                    resumeBluetooth()
+                }
+            }
+        }
+        override fun onSessionDestroyed() {
+            bt = null
+        }
+    }
+
+    private fun trackBluetooth(list: List<MediaController>) {
+        val found = list.firstOrNull { it.packageName == BT_SESSION }
+        if (found?.sessionToken == bt?.sessionToken) return
+        bt?.unregisterCallback(btCallback)
+        bt = found
+        found?.registerCallback(btCallback, handler)
+    }
+
+    /** Hace del Bluetooth la fuente de audio de la pantalla (sin abrir la app "Música BT"). */
+    private fun claimBluetooth() {
+        runCatching { context.sendBroadcast(android.content.Intent(ACQUIRE_A2DP)) }
+    }
+
+    /** Toma la fuente y le pide al celular que suene. false si no hay celular conectado. */
+    private fun resumeBluetooth(): Boolean {
+        val c = bt ?: runCatching { msm.getActiveSessions(NotificationCollector.component(context)) }
+            .getOrDefault(emptyList()).firstOrNull { it.packageName == BT_SESSION }
+            ?: return false
+        claimBluetooth()
+        // Un instante para que el gestor de fuentes cambie la ruta del audio antes del play.
+        handler.postDelayed({ runCatching { c.transportControls.play() } }, 350)
+        return true
+    }
+
+    /**
+     * Tocar "Bluetooth" en Inicio: suena directo, sin abrir la app del fabricante.
+     * false si el celular no está conectado (entonces conviene abrir la app para conectarlo).
+     */
+    fun playBluetooth(): Boolean = resumeBluetooth()
+
     private val controllerCallback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: MediaMetadata?) = publish()
         override fun onPlaybackStateChanged(state: PlaybackState?) {
@@ -121,6 +182,8 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         listening = false
         current?.unregisterCallback(controllerCallback)
         current = null
+        bt?.unregisterCallback(btCallback)
+        bt = null
     }
 
     private fun rechoose() {
@@ -129,6 +192,7 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
     }
 
     private fun choose(list: List<MediaController>) {
+        trackBluetooth(list)
         val vendorSource = SysProp.get("sys.sourcing.package")
         val best = list.sortedWith(
             compareByDescending<MediaController> { it.playbackState?.state == PlaybackState.STATE_PLAYING }
@@ -201,7 +265,7 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
 
     fun sourceOf(pkg: String): MusicSource = when (pkg) {
         VendorApps.ANDROID_AUTO -> MusicSource.ANDROID_AUTO
-        "com.android.bluetooth", VendorApps.BLUETOOTH -> MusicSource.BLUETOOTH
+        BT_SESSION, VendorApps.BLUETOOTH -> MusicSource.BLUETOOTH
         VendorApps.RADIO -> MusicSource.RADIO
         VendorApps.MUSIC, "com.hcn.automediaplayerservice" -> MusicSource.USB
         else -> MusicSource.APP
@@ -215,6 +279,8 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         val actions = c?.playbackState?.actions ?: 0L
         when {
             c == null -> MediaKeys.global(context, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+            // Bluetooth en pausa: además del play hay que recuperar la fuente (si no, se oye la radio).
+            !playing && c.packageName == BT_SESSION -> resumeBluetooth()
             playing && actions and (PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE) != 0L -> c.transportControls.pause()
             !playing && actions and (PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PLAY_PAUSE) != 0L -> c.transportControls.play()
             // Apps que no declaran sus controles (como AutoKit) suelen entender la tecla física.
@@ -234,5 +300,12 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
             // Mandar también la tecla podría saltar dos canciones, así que solo la orden directa.
             else -> runCatching { direct(c.transportControls) }.onFailure { MediaKeys.toSession(c, key) }
         }
+    }
+
+    private companion object {
+        /** Sesión de música del Bluetooth (el celular conectado), del servicio A2DP de Android. */
+        const val BT_SESSION = "com.android.bluetooth"
+        /** Aviso que el gestor de fuentes del fabricante entiende como "el audio ahora es Bluetooth". */
+        const val ACQUIRE_A2DP = "net.easyconn.a2dp.acquire"
     }
 }

@@ -94,6 +94,11 @@ class AppsRepository(private val context: Context, private val scope: CoroutineS
         }.getOrDefault(false)
     }
 
+    /** Nombre visible de una app ("Spotify"), o null si no está instalada. */
+    fun labelOf(pkg: String): String? = runCatching {
+        context.packageManager.run { getApplicationLabel(getApplicationInfo(pkg, 0)).toString() }
+    }.getOrNull()
+
     fun isInstalled(pkg: String): Boolean = context.packageManager.getLaunchIntentForPackage(pkg) != null
 
     fun openAppInfo(pkg: String) {

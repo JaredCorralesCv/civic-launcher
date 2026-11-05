@@ -70,7 +70,7 @@ import kotlinx.coroutines.delay
  * Fondo: degradado OPACO del color de la portada hacia la superficie (una sola capa, barato).
  */
 @Composable
-fun MusicCard(modifier: Modifier = Modifier) {
+fun MusicCard(modifier: Modifier = Modifier, onOpen: () -> Unit) {
     val repo = LocalContext.current.container.media
     val state by repo.state.collectAsStateWithLifecycle()
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { repo.refresh() }
@@ -96,7 +96,7 @@ fun MusicCard(modifier: Modifier = Modifier) {
             }
             is MediaState.Active -> {
                 CardHeader(P.MusicNotes, "Música", sourceLabel(s.now.source), sourceTone(s.now.source))
-                Active(s.now)
+                Active(s.now, onOpen)
             }
         }
     }
@@ -147,7 +147,10 @@ private fun ColumnScope.Sources() {
     Spacer(Modifier.height(Civic.space.m))
     Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Civic.space.s)) {
         SourceTile(P.NavigationArrowFill, "Android Auto", last == MusicSource.ANDROID_AUTO, Modifier.weight(1f)) { open(VendorApps.ANDROID_AUTO) }
-        SourceTile(P.BluetoothFill, "Bluetooth", last == MusicSource.BLUETOOTH, Modifier.weight(1f)) { open(VendorApps.BLUETOOTH) }
+        // Con el celular conectado suena directo; si no, se abre la app para conectarlo.
+        SourceTile(P.BluetoothFill, "Bluetooth", last == MusicSource.BLUETOOTH, Modifier.weight(1f)) {
+            if (!c.media.playBluetooth()) openMusicApp(ctx, MusicSource.BLUETOOTH, VendorApps.BLUETOOTH)
+        }
     }
     Spacer(Modifier.height(Civic.space.s))
     Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Civic.space.s)) {
@@ -157,7 +160,7 @@ private fun ColumnScope.Sources() {
 }
 
 @Composable
-private fun SourceTile(icon: ImageVector, label: String, highlighted: Boolean, modifier: Modifier, onClick: () -> Unit) {
+internal fun SourceTile(icon: ImageVector, label: String, highlighted: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
     val c = Civic.colors
@@ -185,13 +188,26 @@ private fun SourceTile(icon: ImageVector, label: String, highlighted: Boolean, m
 }
 
 @Composable
-private fun ColumnScope.Active(now: NowPlaying) {
-    Spacer(Modifier.weight(1f))
-    CoverCircle(now.art, sourceIcon(now.source), 112.dp)
-    Spacer(Modifier.height(Civic.space.l))
-    CenteredTitle(now.title.orEmpty())
-    CenteredSubtitle(now.artist.orEmpty())
-    Spacer(Modifier.weight(1f))
+private fun ColumnScope.Active(now: NowPlaying, onOpen: () -> Unit) {
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    // Tocar la portada o la canción abre el reproductor de Civic a pantalla completa.
+    Column(
+        Modifier
+            .weight(1f)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Civic.radii.l))
+            .background(if (pressed) Civic.colors.surfaceRaised else Color.Transparent)
+            .clickable(source, indication = null, role = Role.Button, onClickLabel = "Abrir el reproductor", onClick = onOpen),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        CoverCircle(now.art, sourceIcon(now.source), 112.dp)
+        Spacer(Modifier.height(Civic.space.l))
+        CenteredTitle(now.title.orEmpty())
+        CenteredSubtitle(now.artist.orEmpty())
+    }
+    Spacer(Modifier.height(Civic.space.s))
     Progress(now)
     Spacer(Modifier.height(Civic.space.s))
     Controls(playing = now.playing)
@@ -283,7 +299,7 @@ private fun Controls(playing: Boolean?) {
 }
 
 @Composable
-private fun RoundButton(icon: ImageVector, label: String, size: Dp, bg: Color?, onClick: () -> Unit) {
+internal fun RoundButton(icon: ImageVector, label: String, size: Dp, bg: Color?, onClick: () -> Unit) {
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
     val base = bg ?: Civic.colors.surface.copy(alpha = 0f)
@@ -299,7 +315,26 @@ private fun RoundButton(icon: ImageVector, label: String, size: Dp, bg: Color?, 
     }
 }
 
-private fun sourceIcon(s: MusicSource) = when (s) {
+/**
+ * Abre la app de la música que suena. El Bluetooth abre directo la pantalla de música del
+ * fabricante (su ícono principal abre los ajustes del Bluetooth).
+ */
+internal fun openMusicApp(ctx: android.content.Context, source: MusicSource, pkg: String) {
+    val opened = when (source) {
+        MusicSource.BLUETOOTH -> runCatching {
+            ctx.startActivity(
+                android.content.Intent()
+                    .setClassName(VendorApps.BLUETOOTH, "${VendorApps.BLUETOOTH}.BtMusicActivity")
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            true
+        }.getOrDefault(false) || ctx.container.apps.launchPackage(VendorApps.BLUETOOTH)
+        else -> ctx.container.apps.launchPackage(pkg)
+    }
+    if (!opened) Toast.makeText(ctx, "No está instalada en esta pantalla", Toast.LENGTH_SHORT).show()
+}
+
+internal fun sourceIcon(s: MusicSource) = when (s) {
     MusicSource.ANDROID_AUTO -> P.NavigationArrowFill
     MusicSource.BLUETOOTH -> P.BluetoothFill
     MusicSource.RADIO -> P.RadioFill
@@ -361,9 +396,9 @@ fun CardHeader(icon: ImageVector, title: String, status: String?, tone: Tone) {
     }
 }
 
-private fun sourceLabel(s: MusicSource) = if (s == MusicSource.APP) "Sonando" else s.label
+internal fun sourceLabel(s: MusicSource) = if (s == MusicSource.APP) "Sonando" else s.label
 
-private fun sourceTone(s: MusicSource) = when (s) {
+internal fun sourceTone(s: MusicSource) = when (s) {
     MusicSource.ANDROID_AUTO -> Tone.Accent
     MusicSource.BLUETOOTH -> Tone.Cool
     MusicSource.RADIO -> Tone.Warn
