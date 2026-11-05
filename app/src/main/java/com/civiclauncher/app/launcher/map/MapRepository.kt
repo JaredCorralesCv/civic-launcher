@@ -56,11 +56,20 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
         refresh()
     }
 
-    fun refresh() {
-        val ready = dir.listFiles { f -> f.isFile && f.name.endsWith(".map") && f.length() > 1_000_000 }
+    /** El mapa más grande ya completo (las descargas e importaciones a medias no terminan en .map). */
+    private fun readyFile(): File? =
+        dir.listFiles { f -> f.isFile && f.name.endsWith(".map") && f.length() > 1_000_000 }
             ?.maxByOrNull { it.length() }
+
+    fun refresh() {
+        val ready = readyFile()
         when {
-            ready != null -> _status.value = MapStatus.Ready(ready)
+            ready != null -> {
+                // Ya hay mapa (copiado por adb o importado de USB): una descarga pendiente sobra y,
+                // si siguiera viva, taparía el mapa con "Descargando".
+                dropPendingDownload()
+                _status.value = MapStatus.Ready(ready)
+            }
             sp.getLong("download_id", -1) >= 0 -> watchDownload()
             _status.value !is MapStatus.Importing -> _status.value = MapStatus.Missing
         }
@@ -87,12 +96,17 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
     }
 
     fun cancelDownload() {
+        dropPendingDownload()
+        refresh()
+    }
+
+    /** Cancela la descarga en curso (si hay) y borra lo que llevaba. No toca los mapas completos. */
+    private fun dropPendingDownload() {
         val id = sp.getLong("download_id", -1)
-        if (id >= 0) (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).remove(id)
+        if (id >= 0) runCatching { (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).remove(id) }
         sp.edit().remove("download_id").apply()
         pollJob?.cancel()
         File(dir, PARTIAL).delete()
-        refresh()
     }
 
     private fun watchDownload() {
@@ -102,6 +116,15 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
             while (isActive) {
                 val id = sp.getLong("download_id", -1)
                 if (id < 0) break
+                // Llegó un mapa completo por otro lado mientras se descargaba: gana ese.
+                val ready = readyFile()
+                if (ready != null) {
+                    sp.edit().remove("download_id").apply()
+                    runCatching { dm.remove(id) }
+                    File(dir, PARTIAL).delete()
+                    _status.value = MapStatus.Ready(ready)
+                    break
+                }
                 val cursor = runCatching { dm.query(DownloadManager.Query().setFilterById(id)) }.getOrNull()
                 var done = false
                 cursor?.use { c ->
@@ -130,7 +153,8 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
                             _status.value = MapStatus.Error("La descarga falló. Revisa el WiFi e intenta otra vez.")
                             done = true
                         }
-                        else -> _status.value = MapStatus.Downloading(if (total > 0) got.toFloat() / total else null, got / 1_048_576)
+                        // Mientras se importa de USB, la barra de la importación manda.
+                        else -> if (_status.value !is MapStatus.Importing) _status.value = MapStatus.Downloading(if (total > 0) got.toFloat() / total else null, got / 1_048_576)
                     }
                 }
                 if (done) break
