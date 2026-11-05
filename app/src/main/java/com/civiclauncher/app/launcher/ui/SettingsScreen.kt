@@ -101,6 +101,8 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
             }
         }
 
+        item { CarPhotoRow() }
+
         item { SectionHeader("Fecha y hora") }
         item {
             SettingRow(
@@ -110,6 +112,9 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
                 tone = if (tz == "Asia/Shanghai") Tone.Warn else Tone.Neutral,
             ) { open(Intent(Settings.ACTION_DATE_SETTINGS)) }
         }
+
+        item { SectionHeader("Mapa") }
+        item { MapSettings() }
 
         item { SectionHeader("OBD") }
         item { ObdSettings() }
@@ -134,6 +139,19 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
 
         item { SectionHeader("Avanzado") }
         item { SettingRow(P.Wrench, "Diagnóstico", "Las pruebas de hardware de la Fase 0") { onOpenDiagnostics() } }
+        item {
+            val demo = c.demoMedia
+            val on by demo.active.collectAsStateWithLifecycle()
+            SettingRow(
+                P.MusicNotes,
+                if (on) "Música de prueba: encendida" else "Música de prueba",
+                "Canciones inventadas, sin sonido, para ver la tarjeta de música de Inicio sin el celular",
+                showChevron = false,
+            ) {
+                if (on) demo.stop() else demo.start()
+                c.media.refresh()
+            }
+        }
         item {
             SettingRow(
                 P.Info,
@@ -173,6 +191,69 @@ private fun SettingRow(
             Text(subtitle, style = Civic.type.bodySmall, color = Civic.colors.textDim)
         }
         if (showChevron) Icon(P.CaretRight, null, tint = Civic.colors.textFaint, modifier = Modifier.size(22.dp))
+    }
+}
+
+@Composable
+private fun MapSettings() {
+    val repo = LocalContext.current.container.map
+    val status by repo.status.collectAsStateWithLifecycle()
+    var confirmDelete by remember { mutableStateOf(false) }
+    val ready = status as? com.civiclauncher.app.launcher.map.MapStatus.Ready
+    if (ready == null) {
+        CivicCard(Modifier.fillMaxWidth()) {
+            com.civiclauncher.app.launcher.map.MapSetup(status, Modifier.fillMaxWidth())
+        }
+        return
+    }
+    SettingRow(
+        P.MapTrifold,
+        "Mapa instalado: ${ready.file.name.removeSuffix(".map")}",
+        "${ready.file.length() / 1_048_576} MB · funciona sin internet · datos de OpenStreetMap",
+        showChevron = false,
+    ) { }
+    Spacer(Modifier.size(Civic.space.s))
+    SettingRow(P.Power, "Borrar el mapa", "Libera ${ready.file.length() / 1_048_576} MB. Puedes volver a descargarlo.", showChevron = false) {
+        confirmDelete = true
+    }
+    if (confirmDelete) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("¿Borrar el mapa?") },
+            text = { Text("Para volver a tenerlo habrá que descargar ${com.civiclauncher.app.launcher.map.MapRepository.MEXICO_SIZE_MB} MB por WiFi.") },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { confirmDelete = false; repo.delete() }) { Text("Borrar") } },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { confirmDelete = false }) { Text("Cancelar") } },
+        )
+    }
+}
+
+/** Elegir la foto de tu carro para "Mi vehículo" en Inicio (desde la galería o una memoria USB). */
+@Composable
+private fun CarPhotoRow() {
+    val ctx = LocalContext.current
+    val repo = ctx.container.carPhoto
+    val photo by repo.photo.collectAsStateWithLifecycle()
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri != null) {
+            repo.setFrom(uri) { ok ->
+                Toast.makeText(ctx, if (ok) "Foto lista" else "No se pudo usar esa imagen", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(Civic.space.s)) {
+        SettingRow(
+            P.Car,
+            if (photo == null) "Foto de tu carro" else "Cambiar foto de tu carro",
+            "Aparece en \"Mi vehículo\" en Inicio. Funciona mejor una foto de lado con fondo oscuro.",
+        ) {
+            runCatching { picker.launch("image/*") }
+                .onFailure { Toast.makeText(ctx, "No hay app para elegir imágenes", Toast.LENGTH_SHORT).show() }
+        }
+        if (photo != null) {
+            SettingRow(P.Car, "Quitar foto", "Vuelve al dibujo de un carro", showChevron = false) { repo.clear() }
+        }
     }
 }
 

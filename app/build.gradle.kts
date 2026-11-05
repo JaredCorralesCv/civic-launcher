@@ -17,8 +17,8 @@ android {
         // Tu pantalla tiene Android 8.1 (API 27). Dejamos 24 por margen; las librerías piden 23 o más.
         minSdk = 24
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.3.1"
+        versionCode = 10
+        versionName = "0.4.0"
     }
 
     // Firma propia: el actualizador solo puede instalar versiones firmadas con la MISMA llave.
@@ -68,6 +68,11 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.service)
     implementation(libs.kotlinx.coroutines.core)
+
+    // Mapas sin internet (Mapsforge dibuja con Canvas: funciona en la Mali-450, que solo tiene OpenGL ES 2.0).
+    implementation(libs.mapsforge.map.android)
+    implementation(libs.mapsforge.themes)
+    implementation(libs.androidsvg)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

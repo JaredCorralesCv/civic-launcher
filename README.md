@@ -15,6 +15,18 @@ Civic ya es un launcher completo:
 
 El botón de inicio siempre regresa a Inicio y "atrás" nunca sale del launcher. Las barras del sistema se vuelven a esconder solas si el teclado las muestra.
 
+### Nuevo Inicio, mapa y música (versión 0.4.0)
+
+- **Inicio estilo tablero:** barra superior (hora, fecha, estado del OBD y del GPS, ajustes), tres tarjetas (Mi vehículo, Mapa y Música) y una barra de accesos inferior: Inicio, Radio, Bluetooth, Navegador, Archivos, Ajustes y Apps.
+- **Mapa sin internet** (`launcher/map/`): Mapsforge 0.25 con el mapa oficial de México (OpenStreetMap, 686 MB). Dibuja con Canvas, así que funciona en la Mali-450, que solo tiene OpenGL ES 2.0 (MapLibre exige ES 3.0). Incluye:
+  - flecha que gira con el rumbo del GPS y nombre de la calle actual (leído del propio mapa),
+  - modo noche (filtro de color sobre el tema *Motorider*) y solo las capas útiles al manejar: calles, gasolineras y emergencias,
+  - pantalla completa con zoom y botón para centrar,
+  - descarga solo por WiFi, o importación desde USB.
+- **Música** (`launcher/media/`): lee cualquier app que publique su sesión de música, con portada, avance y controles. Con AutoKit muestra "Android Auto" y los controles, porque AutoKit no comparte la canción. Para probar sin el celular: Ajustes → Avanzado → Música de prueba.
+- **Foto de tu carro:** Ajustes → Apariencia → Foto de tu carro.
+- Se quitó **Cámara** de los accesos.
+
 ### OBD (Fase 3, versión 0.3.0)
 
 - **Motor** (`obd/ObdEngine.kt`, Kotlin puro): conecta, detecta protocolo y PIDs soportados, y lee en ciclo con prioridades (rápidos en cada vuelta, medios cada 3, lentos cada 10). Salta los PIDs que el carro no tiene. Si se cae el Bluetooth reintenta a 1, 2, 4… hasta 30 s. Si quitas la llave pasa a "carro apagado" y sigue leyendo la batería.

@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.civiclauncher.app.container
 import com.civiclauncher.app.launcher.obd.AdapterCandidate
 import com.civiclauncher.app.launcher.obd.AdapterScanner
 import com.civiclauncher.app.launcher.obd.ObdConfig
@@ -47,6 +48,20 @@ import com.civiclauncher.app.ui.design.Tone
 import com.civiclauncher.app.ui.rememberPermissionAction
 import com.civiclauncher.obd.EngineState
 import com.civiclauncher.obd.Reading
+
+/**
+ * Velocidad a mostrar en toda la app: la del OBD si está conectado y es reciente (más precisa,
+ * funciona en túneles), si no la del GPS. Devuelve el valor y si vino del OBD.
+ */
+@Composable
+fun rememberSpeed(): Pair<Double?, Boolean> {
+    val c = LocalContext.current.container
+    val gps by c.gps.speed.collectAsStateWithLifecycle()
+    val obdState by c.obd.state.collectAsStateWithLifecycle()
+    val obdData by c.obd.data.collectAsStateWithLifecycle()
+    val obd = if (obdState is EngineState.Connected) obdData[com.civiclauncher.obd.Pids.SPEED].fresh(5_000)?.value else null
+    return (obd ?: gps.kmh?.toDouble()) to (obd != null)
+}
 
 /** Un dato del OBD solo se muestra si llegó hace menos de 10 s; si no, es viejo y engañaría. */
 fun Reading?.fresh(maxAgeMs: Long = 10_000): Reading? =

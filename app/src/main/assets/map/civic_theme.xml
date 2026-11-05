@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Estilo de mapa de Civic Launcher (Mapsforge render theme v6).
+  Plantilla: los {{colores}} los pone MapTheme.kt según sea de día o de noche.
+  Reglas: pocas capas, sin flechas de sentido, sin íconos de negocios; solo calles, agua, parques,
+  nombres y lo útil al manejar (gasolineras y hospitales).
+  Los anchos de línea están en la escala de Mapsforge (zoom 12) y crecen solos al acercar.
+-->
+<rendertheme xmlns="http://mapsforge.org/renderTheme" version="6"
+    map-background="{{land}}" map-background-outside="{{land}}">
+
+    <!-- Mar y tierra -->
+    <rule e="way" k="natural" v="issea|sea">
+        <area fill="{{water}}" />
+    </rule>
+    <rule e="way" k="natural" v="nosea">
+        <area fill="{{land}}" stroke="{{land}}" stroke-width="1.0" />
+    </rule>
+    <rule e="way" k="natural" v="land">
+        <area fill="{{land}}" />
+    </rule>
+
+    <!-- Parques, bosques y zonas verdes -->
+    <rule e="way" k="leisure|landuse|natural|boundary"
+        v="park|garden|recreation_ground|forest|wood|grass|meadow|village_green|cemetery|golf_course|nature_reserve|national_park|scrub|pitch"
+        zoom-min="10">
+        <area fill="{{park}}" />
+    </rule>
+
+    <!-- Zonas industriales, comerciales, hospitales y escuelas -->
+    <rule e="way" k="landuse" v="industrial|commercial|retail|railway|military" zoom-min="13">
+        <area fill="{{urban}}" />
+    </rule>
+    <rule e="way" k="amenity" v="hospital|university|school|college" zoom-min="14">
+        <area fill="{{urban}}" />
+    </rule>
+    <rule e="way" k="aeroway" v="aerodrome" zoom-min="10">
+        <area fill="{{urban}}" />
+    </rule>
+
+    <!-- Agua -->
+    <rule e="way" k="natural|landuse|waterway|leisure"
+        v="water|reservoir|basin|riverbank|dock|wetland|swimming_pool">
+        <area fill="{{water}}" />
+    </rule>
+    <rule e="way" k="waterway" v="river|canal" zoom-min="10">
+        <line stroke="{{water}}" stroke-width="1.0" stroke-linecap="round" />
+    </rule>
+    <rule e="way" k="waterway" v="stream" zoom-min="14">
+        <line stroke="{{water}}" stroke-width="0.35" stroke-linecap="round" />
+    </rule>
+
+    <!-- Edificios: solo de cerca y muy sutiles -->
+    <rule e="way" k="building" v="*" zoom-min="16">
+        <area fill="{{building}}" />
+    </rule>
+
+    <!-- Tren y metro -->
+    <rule e="way" k="railway" v="rail|light_rail|subway|tram|narrow_gauge" zoom-min="12">
+        <line stroke="{{rail}}" stroke-width="0.35" stroke-linecap="butt" />
+    </rule>
+
+    <!-- Calles: de las menores a las mayores, para que las grandes queden encima -->
+    <rule e="way" k="highway" v="*">
+        <rule e="way" k="area" v="~|no|false">
+            <rule e="way" k="highway" v="service" zoom-min="15">
+                <line stroke="{{minor}}" stroke-width="0.45" stroke-linecap="round" />
+            </rule>
+            <rule e="way" k="highway" v="residential|unclassified|living_street|road" zoom-min="13">
+                <line stroke="{{casing}}" stroke-width="1.15" stroke-linecap="round" />
+                <line stroke="{{minor}}" stroke-width="0.9" stroke-linecap="round" />
+            </rule>
+            <rule e="way" k="highway" v="tertiary|tertiary_link|secondary|secondary_link" zoom-min="11">
+                <line stroke="{{casing}}" stroke-width="1.6" stroke-linecap="round" />
+                <line stroke="{{secondary}}" stroke-width="1.3" stroke-linecap="round" />
+            </rule>
+            <rule e="way" k="highway" v="primary|primary_link" zoom-min="8">
+                <line stroke="{{casing}}" stroke-width="2.0" stroke-linecap="round" />
+                <line stroke="{{primary}}" stroke-width="1.65" stroke-linecap="round" />
+            </rule>
+            <rule e="way" k="highway" v="trunk|trunk_link|motorway|motorway_link" zoom-min="6">
+                <line stroke="{{casing}}" stroke-width="2.5" stroke-linecap="round" />
+                <line stroke="{{highway}}" stroke-width="2.1" stroke-linecap="round" />
+            </rule>
+        </rule>
+    </rule>
+
+    <!-- Nombres de calles -->
+    <rule e="way" k="highway" v="motorway|trunk|primary" zoom-min="13">
+        <pathText k="name" font-style="bold" font-size="13" fill="{{label}}" stroke="{{halo}}" stroke-width="3.0" />
+    </rule>
+    <rule e="way" k="highway" v="secondary|tertiary" zoom-min="14">
+        <pathText k="name" font-style="bold" font-size="12" fill="{{label}}" stroke="{{halo}}" stroke-width="3.0" />
+    </rule>
+    <rule e="way" k="highway" v="residential|unclassified|living_street" zoom-min="16">
+        <pathText k="name" font-size="11" fill="{{minorLabel}}" stroke="{{halo}}" stroke-width="2.5" />
+    </rule>
+
+    <!-- Lugares -->
+    <rule e="node" k="place" v="city" zoom-max="13">
+        <caption k="name" font-style="bold" font-size="17" fill="{{placeLabel}}" stroke="{{halo}}" stroke-width="3.0" />
+    </rule>
+    <rule e="node" k="place" v="town" zoom-min="9" zoom-max="14">
+        <caption k="name" font-style="bold" font-size="15" fill="{{placeLabel}}" stroke="{{halo}}" stroke-width="3.0" />
+    </rule>
+    <rule e="node" k="place" v="suburb|neighbourhood|village|quarter" zoom-min="13" zoom-max="16">
+        <caption k="name" font-size="12" fill="{{minorLabel}}" stroke="{{halo}}" stroke-width="2.5" />
+    </rule>
+
+    <!-- Lo útil al manejar: gasolineras y hospitales -->
+    <rule e="node" k="amenity" v="fuel" zoom-min="14">
+        <circle radius="5" scale-radius="false" fill="{{fuel}}" stroke="{{halo}}" stroke-width="1.5" />
+        <caption k="name" dy="-14" font-size="11" fill="{{fuel}}" stroke="{{halo}}" stroke-width="2.5" />
+    </rule>
+    <rule e="node" k="amenity" v="hospital" zoom-min="14">
+        <circle radius="5" scale-radius="false" fill="{{hospital}}" stroke="{{halo}}" stroke-width="1.5" />
+        <caption k="name" dy="-14" font-size="11" fill="{{hospital}}" stroke="{{halo}}" stroke-width="2.5" />
+    </rule>
+</rendertheme>

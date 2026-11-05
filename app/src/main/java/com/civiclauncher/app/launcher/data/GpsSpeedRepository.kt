@@ -35,6 +35,13 @@ data class GpsSpeed(
     val satsUsed: Int = 0,
     val satsVisible: Int = 0,
     val accuracyM: Float? = null,
+    /** Hacia dónde avanza el carro, en grados (0 = norte). Solo existe en movimiento. */
+    val bearing: Float? = null,
+    /** Última posición (solo se usa dentro de la app, para el mapa; nunca se guarda en reportes). */
+    val lat: Double? = null,
+    val lon: Double? = null,
+    /** true si la última ubicación llegó hace menos de 5 s. */
+    val fresh: Boolean = false,
 )
 
 /**
@@ -81,7 +88,17 @@ class GpsSpeedRepository(private val context: Context, scope: CoroutineScope) {
                 lastFix = SystemClock.elapsedRealtime()
                 // Por debajo de 3 km/h el GPS "tiembla" aunque el carro esté detenido.
                 val kmh = if (location.hasSpeed()) (location.speed * 3.6f).let { if (it < 3f) 0f else it } else null
-                emit(state.copy(kmh = kmh, accuracyM = if (location.hasAccuracy()) location.accuracy else null))
+                emit(
+                    state.copy(
+                        kmh = kmh,
+                        accuracyM = if (location.hasAccuracy()) location.accuracy else null,
+                        // Detenido, la dirección del GPS es ruido: conservamos la última buena.
+                        bearing = if (location.hasBearing() && (kmh ?: 0f) >= 5f) location.bearing else state.bearing,
+                        lat = location.latitude,
+                        lon = location.longitude,
+                        fresh = true,
+                    ),
+                )
             }
 
             @Deprecated("API vieja")
@@ -107,7 +124,9 @@ class GpsSpeedRepository(private val context: Context, scope: CoroutineScope) {
         launch {
             while (isActive) {
                 delay(2_000)
-                if (state.kmh != null && SystemClock.elapsedRealtime() - lastFix > 5_000) emit(state.copy(kmh = null))
+                if ((state.kmh != null || state.fresh) && SystemClock.elapsedRealtime() - lastFix > 5_000) {
+                    emit(state.copy(kmh = null, fresh = false))
+                }
             }
         }
         awaitClose {

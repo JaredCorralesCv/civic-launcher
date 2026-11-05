@@ -56,6 +56,13 @@ class AppContainer(context: Context) {
     // OBD (Fase 3)
     val obd by lazy { ObdRepository(context, appScope) }
 
+    val map by lazy { com.civiclauncher.app.launcher.map.MapRepository(context, appScope) }
+    val carPhoto by lazy { com.civiclauncher.app.launcher.data.CarPhotoRepository(context, appScope) }
+
+    // Música en Inicio
+    val media by lazy { com.civiclauncher.app.launcher.media.MediaRepository(context, appScope) }
+    val demoMedia by lazy { com.civiclauncher.app.diag.DemoMediaSession(context) }
+
     // Limpieza de apps preinstaladas
     val cleanup by lazy { com.civiclauncher.app.launcher.cleanup.CleanupRepository(context, appScope, prefs) }
 

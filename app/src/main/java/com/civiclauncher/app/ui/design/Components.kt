@@ -1,6 +1,7 @@
 package com.civiclauncher.app.ui.design
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -37,6 +38,18 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+
+/**
+ * Borde "biselado" de 1 dp: más claro arriba y más tenue abajo, como luz que cae desde arriba.
+ * Es un solo trazo con degradado: no agrega capas ni sombras (barato para la Mali-450).
+ */
+@Composable
+fun Modifier.bevelBorder(shape: androidx.compose.ui.graphics.Shape): Modifier {
+    val c = Civic.colors
+    val top = lerp(c.line, c.text, if (c.isDark) 0.22f else 0.08f)
+    val bottom = lerp(c.surface, c.line, 0.45f)
+    return this.border(1.dp, androidx.compose.ui.graphics.Brush.verticalGradient(listOf(top, bottom)), shape)
+}
 
 /** Tono semántico: el color sale de la paleta activa (día o noche). */
 enum class Tone { Neutral, Accent, Ok, Warn, Bad, Cool }
@@ -98,6 +111,8 @@ fun CivicButton(
     icon: ImageVector? = null,
     kind: ButtonKind = ButtonKind.Primary,
     enabled: Boolean = true,
+    /** Menos relleno a los lados, para botones lado a lado en espacios angostos. */
+    compact: Boolean = false,
 ) {
     val (source, pressed) = rememberPress()
     val c = Civic.colors
@@ -112,7 +127,7 @@ fun CivicButton(
             .clip(RoundedCornerShape(Civic.radii.m))
             .background(if (enabled) bg else c.surfaceRaised)
             .press(source, enabled, Role.Button, onClick)
-            .padding(horizontal = Civic.space.xl),
+            .padding(horizontal = if (compact) Civic.space.m else Civic.space.xl),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
@@ -121,7 +136,8 @@ fun CivicButton(
             Icon(icon, null, tint = color, modifier = Modifier.size(Civic.sizes.icon))
             Spacer(Modifier.width(Civic.space.m))
         }
-        Text(text, style = Civic.type.label.colored(color))
+        // Un botón nunca debe partir su texto en varias líneas: se recorta con "…".
+        Text(text, style = Civic.type.label.colored(color), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
     }
 }
 

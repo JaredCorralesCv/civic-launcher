@@ -38,7 +38,7 @@ import com.civiclauncher.app.ui.design.PhosphorIcons as P
 import kotlinx.coroutines.flow.Flow
 import java.util.Calendar
 
-enum class Dest { HOME, VEHICLE, APPS, SETTINGS, CLEANUP, DIAG }
+enum class Dest { HOME, VEHICLE, MAP, APPS, SETTINGS, CLEANUP, DIAG }
 
 /**
  * Raíz del launcher: dock lateral + pantalla activa.
@@ -78,13 +78,14 @@ fun LauncherRoot(homePresses: Flow<Unit>) {
         return
     }
 
-    CivicDesignTheme(night = themeMode.isNight(hour)) {
-        Row(Modifier.fillMaxSize().background(Civic.colors.background)) {
-            Dock(dest) { dest = it }
-            Box(Modifier.weight(1f).fillMaxHeight()) {
+    val night = themeMode.isNight(hour)
+    CivicDesignTheme(night = night) {
+        Column(Modifier.fillMaxSize().background(Civic.colors.background)) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (dest) {
                     Dest.HOME -> HomeScreen(onOpen = { dest = it })
                     Dest.VEHICLE -> VehicleScreen()
+                    Dest.MAP -> com.civiclauncher.app.launcher.map.MapScreen(night = night)
                     Dest.APPS -> AppsScreen()
                     Dest.SETTINGS -> SettingsScreen(
                         onOpenDiagnostics = { dest = Dest.DIAG },
@@ -94,25 +95,8 @@ fun LauncherRoot(homePresses: Flow<Unit>) {
                     Dest.DIAG -> Unit
                 }
             }
+            BottomBar(dest) { dest = it }
         }
-    }
-}
-
-@Composable
-private fun Dock(current: Dest, onSelect: (Dest) -> Unit) {
-    Column(
-        Modifier
-            .width(Civic.sizes.dockWidth)
-            .fillMaxHeight()
-            .background(Civic.colors.surface)
-            .padding(vertical = Civic.space.m),
-        verticalArrangement = Arrangement.spacedBy(Civic.space.xs),
-    ) {
-        DockItem(P.House, P.HouseFill, "Inicio", current == Dest.HOME, { onSelect(Dest.HOME) })
-        DockItem(P.Gauge, P.GaugeFill, "Vehículo", current == Dest.VEHICLE, { onSelect(Dest.VEHICLE) })
-        DockItem(P.SquaresFour, P.SquaresFourFill, "Apps", current == Dest.APPS, { onSelect(Dest.APPS) })
-        Spacer(Modifier.weight(1f))
-        DockItem(P.GearSix, P.GearSixFill, "Ajustes", current == Dest.SETTINGS || current == Dest.CLEANUP, { onSelect(Dest.SETTINGS) })
     }
 }
 
