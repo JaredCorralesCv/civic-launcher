@@ -165,6 +165,24 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
         item { UpdateCard() }
 
         item { SectionHeader("Avanzado") }
+        item {
+            val opt by c.optimizer.status.collectAsStateWithLifecycle()
+            SettingRow(
+                P.Cpu,
+                when (opt) {
+                    is com.civiclauncher.app.launcher.AppOptimizer.Status.Done -> "Optimizado para esta pantalla"
+                    com.civiclauncher.app.launcher.AppOptimizer.Status.Running -> "Optimizando… (hasta 2 min)"
+                    is com.civiclauncher.app.launcher.AppOptimizer.Status.Failed -> "No se pudo optimizar"
+                    com.civiclauncher.app.launcher.AppOptimizer.Status.Idle -> "Optimizar para esta pantalla"
+                },
+                when (val s = opt) {
+                    is com.civiclauncher.app.launcher.AppOptimizer.Status.Done -> "Civic está compilado a código nativo. Se nota al reiniciar Civic. Toca para repetirlo."
+                    is com.civiclauncher.app.launcher.AppOptimizer.Status.Failed -> "Sin permiso de root (${s.reason}). Se puede hacer por la PC. Toca para reintentar."
+                    else -> "Compila Civic a código nativo para que vaya más fluido. Se hace solo una vez por versión."
+                },
+                showChevron = false,
+            ) { c.optimizer.compileNow() }
+        }
         item { SettingRow(P.Wrench, "Diagnóstico", "Las pruebas de hardware de la Fase 0") { onOpenDiagnostics() } }
         item {
             val demo = c.demoMedia

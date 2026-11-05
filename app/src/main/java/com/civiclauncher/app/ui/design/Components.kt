@@ -73,12 +73,6 @@ private fun Modifier.liquidGlass(shape: androidx.compose.ui.graphics.Shape, dark
             layoutDirection,
             this,
         )
-        val sheen = androidx.compose.ui.graphics.Brush.verticalGradient(
-            0f to Color.White.copy(alpha = if (dark) 0.045f else 0.18f),
-            0.4f to Color.Transparent,
-            startY = 0f,
-            endY = size.height,
-        )
         val edge = androidx.compose.ui.graphics.Brush.linearGradient(
             0f to Color.White.copy(alpha = if (dark) 0.30f else 0.75f),
             0.22f to Color.White.copy(alpha = if (dark) 0.07f else 0.30f),
@@ -89,7 +83,8 @@ private fun Modifier.liquidGlass(shape: androidx.compose.ui.graphics.Shape, dark
         )
         val inner = Color.Black.copy(alpha = if (dark) 0.22f else 0.06f)
         onDrawBehind {
-            drawOutline(outline, sheen)
+            // Sin reflejo de relleno (era un degradado sobre TODA la tarjeta, casi invisible y caro
+            // para la Mali-450): el brillo del canto ya da el efecto de vidrio. Solo trazos finos.
             translate(inset, inset) {
                 drawOutline(innerShape, inner, style = androidx.compose.ui.graphics.drawscope.Stroke(1f))
             }

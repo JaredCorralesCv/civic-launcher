@@ -5,8 +5,6 @@ import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -232,8 +230,10 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
             AnimatedVisibility(
                 visible = shown,
                 modifier = Modifier.align(Alignment.BottomCenter),
-                enter = androidx.compose.animation.slideInVertically { it } + fadeIn(),
-                exit = androidx.compose.animation.slideOutVertically { it } + fadeOut(),
+                // Solo deslizar: un desvanecido de elementos traslúcidos encimados obliga a la GPU a pintar en
+                // una capa aparte y mezclarla, caro en la Mali-450.
+                enter = androidx.compose.animation.slideInVertically(androidx.compose.animation.core.tween(220)) { it },
+                exit = androidx.compose.animation.slideOutVertically(androidx.compose.animation.core.tween(220)) { it },
             ) {
                 BottomBar(dest, go)
             }

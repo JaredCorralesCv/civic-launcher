@@ -30,6 +30,8 @@ class CivicApp : Application() {
         if (container.obd.config.value.mode != ObdMode.NONE) ObdService.start(this)
         // Al encender el carro, volver a Inicio (el sistema abre el launcher original al apagar).
         com.civiclauncher.app.launcher.WakeWatcher.register(this)
+        // Compilar Civic a código nativo una vez por versión (en Android 8.1 corre interpretado).
+        container.optimizer.runIfNeeded()
         // Al conectar el celular por Bluetooth, que la música empiece sola.
         com.civiclauncher.app.launcher.media.PhoneWatcher.register(this)
         // El arranque rápido de Autochips mata las apps al quitar la llave y no siempre las revive.
@@ -56,6 +58,7 @@ class AppContainer(context: Context) {
     val gps by lazy { GpsSpeedRepository(context, appScope) }
     val apps by lazy { AppsRepository(context, appScope) }
     val updater by lazy { Updater(context, appScope) }
+    val optimizer by lazy { com.civiclauncher.app.launcher.AppOptimizer(context, appScope) }
 
     // OBD (Fase 3)
     val obd by lazy { ObdRepository(context, appScope) }

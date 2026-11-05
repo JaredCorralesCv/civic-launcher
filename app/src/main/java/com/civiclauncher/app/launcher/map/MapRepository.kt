@@ -52,6 +52,15 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
 
     init {
         // Mapsforge necesita esto una vez antes de crear cualquier mapa.
+        // Ajustes para el Cortex-A7 de 4 núcleos y su poca memoria (antes de crear la fábrica):
+        //  - 2 hilos dibujando mosaicos (de fábrica es 1); los otros 2 núcleos quedan para la interfaz
+        //    y el audio.
+        //  - Mosaicos de 16 bits: la mitad de memoria y de ancho de banda por mosaico. El mapa usa
+        //    colores lisos, así que no se nota.
+        //  - Al hacer zoom, el mosaico de respaldo se dibuja rápido, no "bonito".
+        org.mapsforge.core.util.Parameters.NUMBER_OF_THREADS = 2
+        org.mapsforge.core.util.Parameters.ANDROID_32BIT_COLOR = false
+        org.mapsforge.core.util.Parameters.PARENT_TILES_RENDERING = org.mapsforge.core.util.Parameters.ParentTilesRendering.SPEED
         AndroidGraphicFactory.createInstance(context.applicationContext as Application)
         refresh()
     }
