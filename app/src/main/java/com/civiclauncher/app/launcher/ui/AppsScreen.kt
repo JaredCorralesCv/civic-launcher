@@ -44,8 +44,8 @@ fun AppsScreen() {
     val repo = ctx.container.apps
     val apps by repo.apps.collectAsStateWithLifecycle()
 
-    Column(Modifier.fillMaxSize().padding(top = Civic.space.xl)) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = Civic.space.xl), verticalAlignment = Alignment.Bottom) {
+    Column(Modifier.fillMaxSize().padding(top = Civic.space.m)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = PAGE_GUTTER), verticalAlignment = Alignment.Bottom) {
             Text("Apps", style = Civic.type.headline, color = Civic.colors.text)
             Spacer(Modifier.size(Civic.space.m))
             Text("${apps.size}", style = Civic.type.title, color = Civic.colors.textFaint)
@@ -54,7 +54,7 @@ fun AppsScreen() {
         }
         LazyVerticalGrid(
             columns = GridCells.Adaptive(136.dp),
-            contentPadding = PaddingValues(Civic.space.xl),
+            contentPadding = PaddingValues(horizontal = PAGE_GUTTER, vertical = Civic.space.m),
             horizontalArrangement = Arrangement.spacedBy(Civic.space.m),
             verticalArrangement = Arrangement.spacedBy(Civic.space.m),
             modifier = Modifier.fillMaxSize(),

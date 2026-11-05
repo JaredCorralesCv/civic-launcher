@@ -30,6 +30,8 @@ class CivicApp : Application() {
         if (container.obd.config.value.mode != ObdMode.NONE) ObdService.start(this)
         // Al encender el carro, volver a Inicio (el sistema abre el launcher original al apagar).
         com.civiclauncher.app.launcher.WakeWatcher.register(this)
+        // Al conectar el celular por Bluetooth, que la música empiece sola.
+        com.civiclauncher.app.launcher.media.PhoneWatcher.register(this)
         // El arranque rápido de Autochips mata las apps al quitar la llave y no siempre las revive.
         // Cada vez que el proceso renace (por la pantalla, un aviso o el sistema), reanudamos el monitor.
         if (container.prefs.accMonitorEnabled) {
@@ -59,10 +61,12 @@ class AppContainer(context: Context) {
     val obd by lazy { ObdRepository(context, appScope) }
 
     val map by lazy { com.civiclauncher.app.launcher.map.MapRepository(context, appScope) }
+    val wallpapers by lazy { com.civiclauncher.app.launcher.data.WallpaperRepository(context, appScope) }
     val carPhoto by lazy { com.civiclauncher.app.launcher.data.CarPhotoRepository(context, appScope) }
 
     // Música en Inicio
     val media by lazy { com.civiclauncher.app.launcher.media.MediaRepository(context, appScope) }
+    val radio by lazy { com.civiclauncher.app.launcher.media.RadioRepository(context, appScope) { media.yieldToOtherSource() } }
     val demoMedia by lazy { com.civiclauncher.app.diag.DemoMediaSession(context) }
 
     // Limpieza de apps preinstaladas

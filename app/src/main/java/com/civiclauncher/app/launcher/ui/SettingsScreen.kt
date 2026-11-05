@@ -4,6 +4,7 @@ import android.content.Intent
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -69,7 +70,7 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
 
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(Civic.space.xl),
+        contentPadding = PaddingValues(horizontal = PAGE_GUTTER, vertical = Civic.space.m),
         verticalArrangement = Arrangement.spacedBy(Civic.space.s),
     ) {
         item { Text("Ajustes", style = Civic.type.headline, color = Civic.colors.text) }
@@ -101,7 +102,33 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
             }
         }
 
+        item { WallpaperPicker() }
+
+        item {
+            val autoHide by c.launcherPrefs.autoHideBar.collectAsStateWithLifecycle()
+            SettingRow(
+                P.SquaresFourLight,
+                if (autoHide) "Esconder la barra de abajo: sí" else "Esconder la barra de abajo: no",
+                "Se esconde sola tras 6 s sin tocar la pantalla. Para abrirla, desliza hacia arriba desde el borde de abajo o toca la rayita.",
+                showChevron = false,
+            ) { c.launcherPrefs.setAutoHideBar(!autoHide) }
+        }
+
         item { CarPhotoRow() }
+
+        item { SectionHeader("Música") }
+        item {
+            var autoplay by remember { mutableStateOf(c.launcherPrefs.autoplayBluetooth) }
+            SettingRow(
+                P.BluetoothLight,
+                if (autoplay) "Reproducir al conectar: sí" else "Reproducir al conectar: no",
+                "Cuando tu celular se conecta por Bluetooth, la música empieza sola. Toca para cambiar.",
+                showChevron = false,
+            ) {
+                autoplay = !autoplay
+                c.launcherPrefs.autoplayBluetooth = autoplay
+            }
+        }
 
         item { SectionHeader("Fecha y hora") }
         item {
@@ -228,6 +255,99 @@ private fun MapSettings() {
 }
 
 /** Elegir la foto de tu carro para "Mi vehículo" en Inicio (desde la galería o una memoria USB). */
+/** Fondo de pantalla: "Sin fondo", los que hay en la carpeta de Civic, y "Agregar" desde USB/galería. */
+@Composable
+private fun WallpaperPicker() {
+    val ctx = LocalContext.current
+    val repo = ctx.container.wallpapers
+    val files by repo.files.collectAsStateWithLifecycle()
+    val selected by repo.selected.collectAsStateWithLifecycle()
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) { repo.refresh() }
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+        // Varias a la vez: puedes elegir todos los fondos de tu memoria USB de una sola vez.
+        androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents(),
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            repo.import(uris) { n ->
+                val msg = when (n) {
+                    0 -> "No se pudo usar esa imagen"
+                    1 -> "Fondo listo"
+                    else -> "$n fondos agregados"
+                }
+                Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    CivicCard(Modifier.fillMaxWidth()) {
+        Text("Fondo de pantalla", style = Civic.type.label, color = Civic.colors.text)
+        Text(
+            "Con fondo, las tarjetas se vuelven de vidrio y dejan ver la imagen.",
+            style = Civic.type.bodySmall,
+            color = Civic.colors.textDim,
+        )
+        Spacer(Modifier.size(Civic.space.m))
+        androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(Civic.space.m)) {
+            item {
+                WallpaperTile(selected == null, { repo.select(null) }) {
+                    TileLabel(P.XFill, "Sin fondo")
+                }
+            }
+            items(files.size, key = { files[it].name }) { i ->
+                val f = files[i]
+                val thumb by androidx.compose.runtime.produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, f.name) {
+                    value = repo.thumbnail(f)
+                }
+                WallpaperTile(selected == f.name, { repo.select(f.name) }) {
+                    thumb?.let {
+                        androidx.compose.foundation.Image(
+                            it,
+                            contentDescription = "Fondo ${f.nameWithoutExtension}",
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                }
+            }
+            item {
+                WallpaperTile(false, {
+                    runCatching { picker.launch("image/*") }
+                        .onFailure { Toast.makeText(ctx, "No hay app para elegir imágenes", Toast.LENGTH_SHORT).show() }
+                }) {
+                    TileLabel(P.DownloadSimple, "Agregar")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WallpaperTile(selected: Boolean, onClick: () -> Unit, content: @Composable () -> Unit) {
+    val shape = RoundedCornerShape(Civic.radii.m)
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    androidx.compose.foundation.layout.Box(
+        Modifier
+            .size(width = 168.dp, height = 100.dp)
+            .clip(shape)
+            .background(if (pressed) Civic.colors.surfacePressed else Civic.colors.surfaceRaised)
+            .then(
+                if (selected) Modifier.border(3.dp, Civic.colors.accent, shape)
+                else Modifier.border(1.dp, Civic.colors.line, shape),
+            )
+            .clickable(source, indication = null, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { content() }
+}
+
+@Composable
+private fun TileLabel(icon: ImageVector, text: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(icon, null, tint = Civic.colors.textDim, modifier = Modifier.size(24.dp))
+        Spacer(Modifier.size(Civic.space.xs))
+        Text(text, style = Civic.type.label, color = Civic.colors.text)
+    }
+}
+
 @Composable
 private fun CarPhotoRow() {
     val ctx = LocalContext.current

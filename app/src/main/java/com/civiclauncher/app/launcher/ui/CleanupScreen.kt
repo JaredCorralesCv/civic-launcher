@@ -64,7 +64,7 @@ fun CleanupScreen(onBack: () -> Unit) {
 
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(Civic.space.xl),
+        contentPadding = PaddingValues(horizontal = PAGE_GUTTER, vertical = Civic.space.m),
         verticalArrangement = Arrangement.spacedBy(Civic.space.s),
     ) {
         item {

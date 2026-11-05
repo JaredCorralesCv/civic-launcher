@@ -39,10 +39,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
+import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.civiclauncher.app.container
@@ -74,13 +77,180 @@ import java.util.Locale
  */
 @Composable
 fun HomeScreen(onOpen: (Dest) -> Unit) {
-    Column(Modifier.fillMaxSize().padding(start = Civic.space.l, end = Civic.space.l, top = Civic.space.m, bottom = Civic.space.m)) {
-        TopBar(onSettings = { onOpen(Dest.SETTINGS) })
+    // Distribución inspirada en el Inicio de CarPlay (iOS 27): riel a la izquierda con la hora y
+    // accesos; a la derecha el mapa, la música y una columna con dos tarjetas chicas.
+    // Un solo bloque: riel y tarjetas comparten borde de arriba y de abajo (sin franja vacía arriba).
+    // Al esconderse la barra de abajo, todo el bloque baja junto a quedar centrado.
+    Column(Modifier.fillMaxSize().padding(horizontal = PAGE_GUTTER, vertical = Civic.space.m)) {
+        TimezoneWarning()
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(Civic.space.m)) {
+            HomeRail(onOpen)
+            MapCard(Modifier.weight(0.95f).fillMaxHeight(), onOpen = { onOpen(Dest.MAP) })
+            MusicCard(Modifier.weight(1.1f).fillMaxHeight(), onOpen = { onOpen(Dest.MUSIC) }, onOpenRadio = { onOpen(Dest.RADIO) })
+            Column(Modifier.weight(1.1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Civic.space.m)) {
+                SpeedCard(Modifier.weight(1.15f).fillMaxWidth()) { onOpen(Dest.VEHICLE) }
+                EngineCard(Modifier.weight(0.85f).fillMaxWidth()) { onOpen(Dest.VEHICLE) }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ Riel izquierdo
+
+/**
+ * Riel izquierdo (como el de CarPlay): la hora arriba, el estado del GPS/OBD, tres accesos y, hasta
+ * abajo, el botón de todas las apps.
+ */
+@Composable
+private fun HomeRail(onOpen: (Dest) -> Unit) {
+    val ctx = LocalContext.current
+    val c = ctx.container
+    val shape = RoundedCornerShape(Civic.radii.xl)
+    Column(
+        Modifier
+            .width(76.dp)
+            .fillMaxHeight()
+            .clip(shape)
+            .background(Civic.colors.surface)
+            .bevelBorder(shape)
+            .padding(vertical = Civic.space.m),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        RailClock()
+        Spacer(Modifier.height(Civic.space.xs))
+        RailStatus()
+        Spacer(Modifier.weight(1f))
+        RailButton(P.MapTrifoldFill, "Mapa", BarColors.GREEN) { onOpen(Dest.MAP) }
         Spacer(Modifier.height(Civic.space.m))
-        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(Civic.space.l)) {
-            VehicleCard(Modifier.weight(1f).fillMaxHeight(), onClick = { onOpen(Dest.VEHICLE) })
-            MapCard(Modifier.weight(1.2f).fillMaxHeight(), onOpen = { onOpen(Dest.MAP) })
-            MusicCard(Modifier.weight(1f).fillMaxHeight(), onOpen = { onOpen(Dest.MUSIC) })
+        RailButton(P.MusicNotesFill, "Música", BarColors.RED) { onOpen(Dest.MUSIC) }
+        Spacer(Modifier.height(Civic.space.m))
+        RailButton(P.AndroidLogoFill, "Android Auto", BarColors.ANDROID) {
+            if (!c.apps.launchPackage(com.civiclauncher.app.launcher.data.VendorApps.ANDROID_AUTO)) Toast.makeText(ctx, "AutoKit no está instalado", Toast.LENGTH_SHORT).show()
+        }
+        Spacer(Modifier.weight(1f))
+        // Abajo, discretos: todas las apps y Ajustes (antes el engrane ocupaba una franja arriba).
+        TopIcon(P.SquaresFourLight, "Todas las apps") { onOpen(Dest.APPS) }
+        TopIcon(P.GearSixLight, "Ajustes") { onOpen(Dest.SETTINGS) }
+    }
+}
+
+/** Margen lateral de todas las pantallas (igual en todas, para que nada "brinque" al cambiar). */
+internal val PAGE_GUTTER = 16.dp
+
+@Composable
+private fun RailClock() {
+    val ctx = LocalContext.current
+    val now by ctx.container.clock.now.collectAsStateWithLifecycle()
+    val is24 = DateFormat.is24HourFormat(ctx)
+    val text = remember(now, is24) {
+        val cal = Calendar.getInstance().apply { timeInMillis = now }
+        if (is24) "%d:%02d".format(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
+        else "%d:%02d".format(cal.get(Calendar.HOUR).let { if (it == 0) 12 else it }, cal.get(Calendar.MINUTE))
+    }
+    Text(text, style = Civic.type.title.copy(fontSize = 20.sp, fontFeatureSettings = "tnum", letterSpacing = (-0.01).em), color = Civic.colors.text)
+}
+
+/** Debajo de la hora: GPS y OBD como dos puntitos con su letra. */
+@Composable
+private fun RailStatus() {
+    val c = LocalContext.current.container
+    val gps by c.gps.speed.collectAsStateWithLifecycle()
+    val obdConfig by c.obd.config.collectAsStateWithLifecycle()
+    val obdState by c.obd.state.collectAsStateWithLifecycle()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Dot(if (gps.fresh) Tone.Ok else Tone.Warn, 7)
+        Spacer(Modifier.width(3.dp))
+        Text("GPS", style = Civic.type.caption.copy(fontSize = 10.sp), color = Civic.colors.textDim)
+    }
+    if (obdConfig.mode != ObdMode.NONE) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Dot(if (obdState is EngineState.Connected) Tone.Ok else Tone.Warn, 7)
+            Spacer(Modifier.width(3.dp))
+            Text("OBD", style = Civic.type.caption.copy(fontSize = 10.sp), color = Civic.colors.textDim)
+        }
+    }
+}
+
+/** Acceso del riel: ícono blanco sobre "squircle" de color con degradado (como los íconos de CarPlay). */
+@Composable
+private fun RailButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, colors: Pair<Color, Color>, onClick: () -> Unit) {
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        Modifier
+            .size(52.dp)
+            .clip(shape)
+            .background(Brush.verticalGradient(if (pressed) listOf(colors.second, colors.second) else listOf(colors.first, colors.second)))
+            .bevelBorder(shape)
+            .clickable(source, indication = null, role = Role.Button, onClickLabel = label, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, label, tint = Color.White, modifier = Modifier.size(28.dp))
+    }
+}
+
+/** Solo si la pantalla sigue con la hora de China: un aviso que lleva al ajuste. */
+@Composable
+private fun TimezoneWarning() {
+    val ctx = LocalContext.current
+    val tz by ctx.container.clock.timeZone.collectAsStateWithLifecycle()
+    if (tz != "Asia/Shanghai") return
+    Box(
+        Modifier.clip(RoundedCornerShape(50)).clickable {
+            runCatching { ctx.startActivity(Intent(Settings.ACTION_DATE_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        },
+    ) { StatusPill("Zona horaria de China", Tone.Warn) }
+    Spacer(Modifier.width(Civic.space.m))
+}
+
+// ------------------------------------------------------------------ Columna derecha
+
+/** Velocidad grande y la barra de RPM (en lugar del clima del diseño original). */
+@Composable
+private fun SpeedCard(modifier: Modifier, onClick: () -> Unit) {
+    val c = LocalContext.current.container
+    val obdState by c.obd.state.collectAsStateWithLifecycle()
+    val obdData by c.obd.data.collectAsStateWithLifecycle()
+    val (speed, fromObd) = rememberSpeed()
+    val rpm = if (obdState is EngineState.Connected) obdData[Pids.RPM].fresh()?.value else null
+    HomeCard(modifier, onClick = onClick) {
+        CardHeader(P.CarSimpleLight, "Vehículo", if (fromObd) "OBD" else "GPS", if (speed != null) Tone.Ok else Tone.Warn)
+        Spacer(Modifier.weight(1f))
+        BigSpeed(speed, 58)
+        Spacer(Modifier.weight(1f))
+        RpmBar(rpm)
+    }
+}
+
+/** Motor y batería, con la raya de color a la izquierda (como la tarjeta de calendario del diseño). */
+@Composable
+private fun EngineCard(modifier: Modifier, onClick: () -> Unit) {
+    val c = LocalContext.current.container
+    val obdState by c.obd.state.collectAsStateWithLifecycle()
+    val obdData by c.obd.data.collectAsStateWithLifecycle()
+    val connected = obdState is EngineState.Connected
+    val coolant = if (connected) obdData[Pids.COOLANT_TEMP].fresh()?.value else null
+    val battery = obdData.battery.fresh(30_000)?.value
+    val tone = when {
+        (coolant ?: 0.0) >= 105 || (battery != null && battery < 11.8) -> Civic.colors.bad
+        (coolant ?: 0.0) >= 100 || (battery != null && battery < 12.2) -> Civic.colors.warn
+        else -> Civic.colors.warn.copy(alpha = 0.9f)
+    }
+    HomeCard(modifier, onClick = onClick) {
+        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(4.dp).fillMaxHeight(0.8f).clip(RoundedCornerShape(50)).background(tone))
+            Spacer(Modifier.width(Civic.space.m))
+            Column(Modifier.weight(1f)) {
+                Text("MOTOR", style = Civic.type.caption.copy(letterSpacing = 0.10.em), color = Civic.colors.textDim)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "${coolant?.let { "%.0f °C".format(it) } ?: "-- °C"}   ·   ${battery?.let { "%.1f V".format(it) } ?: "-- V"}",
+                    style = Civic.type.title.copy(fontSize = 22.sp, fontFeatureSettings = "tnum"),
+                    color = Civic.colors.text,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
@@ -104,14 +274,22 @@ private fun TopBar(onSettings: () -> Unit) {
             "%d:%02d %s".format(h, cal.get(Calendar.MINUTE), if (cal.get(Calendar.AM_PM) == Calendar.AM) "a.m." else "p.m.")
         }
     }
-    val date = remember(now, tz) { SimpleDateFormat("EEEE, d 'de' MMMM", es).format(Date(now)).replaceFirstChar { it.titlecase(es) } }
-
-    Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(time, style = Civic.type.headline.copy(fontSize = 38.sp, lineHeight = 44.sp, fontFeatureSettings = "tnum"), color = Civic.colors.text)
-        Spacer(Modifier.width(Civic.space.xl))
-        Icon(P.CalendarBlank, null, tint = Civic.colors.textDim, modifier = Modifier.size(24.dp))
-        Spacer(Modifier.width(Civic.space.s))
-        Text(date, style = Civic.type.title.copy(fontSize = 20.sp), color = Civic.colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+    // Minimalista: solo la hora (el "a.m./p.m." más chico y tenue) y el engrane de Ajustes.
+    val (clock, suffix) = remember(time) {
+        val i = time.indexOf(' ')
+        if (i > 0) time.substring(0, i) to time.substring(i + 1) else time to null
+    }
+    Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            clock,
+            style = Civic.type.headline.copy(fontSize = 34.sp, lineHeight = 40.sp, fontFeatureSettings = "tnum", letterSpacing = (-0.02).em),
+            color = Civic.colors.text,
+        )
+        if (suffix != null) {
+            Spacer(Modifier.width(6.dp))
+            Text(suffix, style = Civic.type.label, color = Civic.colors.textDim, modifier = Modifier.padding(top = 10.dp))
+        }
+        Spacer(Modifier.weight(1f))
         if (tz == "Asia/Shanghai") {
             // La pantalla venía con la hora de China: un toque lleva al ajuste.
             Box(
@@ -121,59 +299,13 @@ private fun TopBar(onSettings: () -> Unit) {
             ) { StatusPill("Zona horaria de China", Tone.Warn) }
             Spacer(Modifier.width(Civic.space.m))
         }
-        StatusCapsule()
-        Spacer(Modifier.width(Civic.space.m))
-        TopIcon(P.GearSix, "Ajustes", onSettings)
-    }
-}
-
-/** Estado del OBD y del GPS juntos en una sola cápsula, sin rayas divisorias. */
-@Composable
-private fun StatusCapsule() {
-    val c = LocalContext.current.container
-    val obdConfig by c.obd.config.collectAsStateWithLifecycle()
-    val obdState by c.obd.state.collectAsStateWithLifecycle()
-    val gps by c.gps.speed.collectAsStateWithLifecycle()
-    Row(
-        Modifier
-            .height(44.dp)
-            .clip(RoundedCornerShape(50))
-            .background(Civic.colors.surfaceRaised)
-            .padding(horizontal = Civic.space.l),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (obdConfig.mode != ObdMode.NONE) {
-            val (text, tone) = when (obdState) {
-                is EngineState.Connected -> "OBD" to Tone.Ok
-                is EngineState.CarOff -> "OBD · apagado" to Tone.Cool
-                is EngineState.Reconnecting -> "OBD · sin conexión" to Tone.Bad
-                EngineState.Stopped -> "OBD · pausa" to Tone.Neutral
-                else -> "OBD · conectando" to Tone.Warn
-            }
-            Dot(tone)
-            Spacer(Modifier.width(Civic.space.s))
-            Text(text, style = Civic.type.label, color = Civic.colors.textDim)
-            Spacer(Modifier.width(Civic.space.l))
-        }
-        Icon(P.MapPin, null, tint = if (gps.fresh) Civic.colors.ok else Civic.colors.textDim, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(Civic.space.s))
-        Text(
-            when {
-                !gps.permission -> "GPS sin permiso"
-                !gps.enabled -> "GPS apagado"
-                gps.fresh && gps.satsUsed > 0 -> "GPS · ${gps.satsUsed}"
-                gps.fresh -> "GPS"
-                else -> "Buscando GPS"
-            },
-            style = Civic.type.label,
-            color = Civic.colors.textDim,
-        )
+        TopIcon(P.GearSixLight, "Ajustes", onSettings)
     }
 }
 
 @Composable
-private fun Dot(tone: Tone) {
-    Box(Modifier.size(10.dp).clip(CircleShape).background(tone.color()))
+private fun Dot(tone: Tone, size: Int = 10) {
+    Box(Modifier.size(size.dp).clip(CircleShape).background(tone.color()))
 }
 
 @Composable
@@ -188,7 +320,7 @@ private fun TopIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, label
             .clickable(source, indication = null, role = Role.Button, onClickLabel = label, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, label, tint = Civic.colors.text, modifier = Modifier.size(30.dp))
+        Icon(icon, label, tint = Civic.colors.textDim, modifier = Modifier.size(26.dp))
     }
 }
 
@@ -211,7 +343,7 @@ private fun VehicleCard(modifier: Modifier, onClick: () -> Unit) {
     val battery = obdData.battery.fresh(30_000)?.value
 
     HomeCard(modifier, onClick = onClick) {
-        CardHeader(P.Car, "Mi vehículo", if (fromObd) "OBD" else "GPS", if (speed != null) Tone.Ok else Tone.Warn)
+        CardHeader(P.CarSimpleLight, "Mi vehículo", if (fromObd) "OBD" else "GPS", if (speed != null) Tone.Ok else Tone.Warn)
         val p = photo
         if (p != null) {
             Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = Civic.space.s), contentAlignment = Alignment.Center) {
@@ -340,7 +472,7 @@ private fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
 
     if (ready == null) {
         HomeCard(modifier) {
-            CardHeader(P.MapTrifold, "Mapa", "Sin descargar", Tone.Warn)
+            CardHeader(P.MapTrifoldLight, "Mapa", "Sin descargar", Tone.Warn)
             MapSetup(status, Modifier.weight(1f).fillMaxWidth(), compact = true)
         }
         return
@@ -350,7 +482,8 @@ private fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
     val street = rememberStreet(gps)
     val shape = RoundedCornerShape(Civic.radii.xl)
 
-    Box(modifier.clip(shape).background(Civic.colors.surface)) {
+    // Las cápsulas encima del mapa van opacas aunque haya fondo: si no, las calles tapan el texto.
+    com.civiclauncher.app.ui.design.OpaqueSurfaces { Box(modifier.clip(shape).background(Civic.colors.surface)) {
         CivicMap(
             file = ready.file,
             cacheName = MAP_CACHE_CARD,
@@ -375,7 +508,7 @@ private fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
                 .padding(horizontal = Civic.space.m, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(P.MapTrifold, null, tint = Civic.colors.text, modifier = Modifier.size(18.dp))
+            Icon(P.MapTrifoldLight, null, tint = Civic.colors.text, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(Civic.space.s))
             Text("Mapa", style = Civic.type.label, color = Civic.colors.text)
             Spacer(Modifier.width(Civic.space.s))
@@ -406,6 +539,6 @@ private fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
         }
         // El borde va encima del mapa (el mapa es una vista de Android y taparía un borde de fondo).
         Box(Modifier.matchParentSize().bevelBorder(shape))
-    }
+    } }
 }
 

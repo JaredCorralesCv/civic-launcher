@@ -100,7 +100,8 @@ fun MapScreen(night: Boolean) {
     var follow by remember { mutableStateOf(true) }
     val handle = remember { MapHandle() }
 
-    Box(Modifier.fillMaxSize().padding(start = Civic.space.l, end = Civic.space.l, top = Civic.space.m, bottom = Civic.space.m)) {
+    // Encima del mapa, todo opaco aunque haya fondo de pantalla: si no, las calles se ven a través del texto.
+    com.civiclauncher.app.ui.design.OpaqueSurfaces { Box(Modifier.fillMaxSize().padding(start = Civic.space.l, end = Civic.space.l, top = Civic.space.m, bottom = Civic.space.m)) {
         Box(Modifier.fillMaxSize().clip(RoundedCornerShape(Civic.radii.xl)).border(1.dp, Civic.colors.line, RoundedCornerShape(Civic.radii.xl))) {
             CivicMap(
                 file = ready.file,
@@ -150,7 +151,7 @@ fun MapScreen(night: Boolean) {
                 if (!c.apps.launchPackage(VendorApps.ANDROID_AUTO)) Toast.makeText(ctx, "AutoKit no está instalado", Toast.LENGTH_SHORT).show()
             }, icon = P.NavigationArrow)
         }
-    }
+    } }
 }
 
 @Composable

@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -70,7 +71,7 @@ import kotlinx.coroutines.delay
  * Fondo: degradado OPACO del color de la portada hacia la superficie (una sola capa, barato).
  */
 @Composable
-fun MusicCard(modifier: Modifier = Modifier, onOpen: () -> Unit) {
+fun MusicCard(modifier: Modifier = Modifier, onOpen: () -> Unit, onOpenRadio: () -> Unit) {
     val repo = LocalContext.current.container.media
     val state by repo.state.collectAsStateWithLifecycle()
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { repo.refresh() }
@@ -82,22 +83,27 @@ fun MusicCard(modifier: Modifier = Modifier, onOpen: () -> Unit) {
     HomeCard(modifier, Brush.verticalGradient(listOf(top, surface))) {
         when (val s = state) {
             MediaState.NoPermission -> {
-                CardHeader(P.MusicNotes, "Música", "Sin permiso", Tone.Warn)
+                CardHeader(P.MusicNotesLight, "Música", "Sin permiso", Tone.Warn)
                 NoPermission()
             }
             is MediaState.Idle -> {
-                if (s.source == MusicSource.ANDROID_AUTO) {
-                    CardHeader(P.MusicNotes, "Música", "Android Auto", Tone.Accent)
-                    AutoKitPlaying()
-                } else {
-                    CardHeader(P.MusicNotes, "Música", "Sin música", Tone.Neutral)
-                    Sources()
+                when (s.source) {
+                    MusicSource.ANDROID_AUTO -> {
+                        CardHeader(P.MusicNotesLight, "Música", "Android Auto", Tone.Accent)
+                        AutoKitPlaying()
+                    }
+                    MusicSource.RADIO -> {
+                        CardHeader(P.MusicNotesLight, "Música", "Radio", Tone.Warn)
+                        RadioPlaying(onOpenRadio)
+                    }
+                    else -> {
+                        CardHeader(P.MusicNotesLight, "Música", "Sin música", Tone.Neutral)
+                        Sources(onOpenRadio)
+                    }
                 }
             }
-            is MediaState.Active -> {
-                CardHeader(P.MusicNotes, "Música", sourceLabel(s.now.source), sourceTone(s.now.source))
-                Active(s.now, onOpen)
-            }
+            // Sonando: sin encabezado, como el widget de música del diseño (solo la canción y controles).
+            is MediaState.Active -> Active(s.now, onOpen)
         }
     }
 }
@@ -121,7 +127,7 @@ private fun ColumnScope.NoPermission() {
 @Composable
 private fun ColumnScope.AutoKitPlaying() {
     Spacer(Modifier.weight(1f))
-    CoverCircle(null, P.NavigationArrowFill, 104.dp)
+    CoverCircle(null, P.AndroidLogoLight, 104.dp)
     Spacer(Modifier.height(Civic.space.l))
     CenteredTitle("Android Auto")
     CenteredSubtitle("La canción se ve en Android Auto")
@@ -129,61 +135,110 @@ private fun ColumnScope.AutoKitPlaying() {
     Controls(playing = null)
 }
 
-/** Sin música: cuatro accesos grandes. La última fuente que usaste aparece resaltada. */
+/**
+ * Sin música: las dos fuentes que de verdad se usan, Bluetooth (el celular) y Radio. Android Auto ya
+ * tiene su botón en la barra, y "USB" (el reproductor de memorias USB) queda en Apps.
+ */
 @Composable
-private fun ColumnScope.Sources() {
+private fun ColumnScope.Sources(onOpenRadio: () -> Unit) {
     val ctx = LocalContext.current
     val c = ctx.container
     val last by c.media.lastSource.collectAsStateWithLifecycle()
-    fun open(pkg: String) {
-        if (!c.apps.launchPackage(pkg)) Toast.makeText(ctx, "No está instalada en esta pantalla", Toast.LENGTH_SHORT).show()
-    }
+    // Sin texto extra: el encabezado y las dos opciones ya lo dicen todo.
     Spacer(Modifier.height(Civic.space.m))
-    Text(
-        last?.let { "La última vez: ${it.label}" } ?: "¿Qué quieres escuchar?",
-        style = Civic.type.bodySmall,
-        color = Civic.colors.textDim,
-    )
-    Spacer(Modifier.height(Civic.space.m))
-    Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Civic.space.s)) {
-        SourceTile(P.NavigationArrowFill, "Android Auto", last == MusicSource.ANDROID_AUTO, Modifier.weight(1f)) { open(VendorApps.ANDROID_AUTO) }
-        // Con el celular conectado suena directo; si no, se abre la app para conectarlo.
-        SourceTile(P.BluetoothFill, "Bluetooth", last == MusicSource.BLUETOOTH, Modifier.weight(1f)) {
-            if (!c.media.playBluetooth()) openMusicApp(ctx, MusicSource.BLUETOOTH, VendorApps.BLUETOOTH)
-        }
+    // Con el celular conectado suena directo; si no, se abre la app para conectarlo.
+    SourceRow(P.BluetoothLight, BarColors.INDIGO, "Bluetooth", "Tu celular", last == MusicSource.BLUETOOTH, Modifier.weight(1f)) {
+        if (!c.media.playBluetooth()) openMusicApp(ctx, MusicSource.BLUETOOTH, VendorApps.BLUETOOTH)
     }
     Spacer(Modifier.height(Civic.space.s))
-    Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Civic.space.s)) {
-        SourceTile(P.RadioFill, "Radio", last == MusicSource.RADIO, Modifier.weight(1f)) { open(VendorApps.RADIO) }
-        SourceTile(P.MusicNotes, "USB", last == MusicSource.USB, Modifier.weight(1f)) { open(VendorApps.MUSIC) }
+    SourceRow(P.RadioLight, BarColors.RED, "Radio", "FM y AM", last == MusicSource.RADIO, Modifier.weight(1f), onClick = onOpenRadio)
+}
+
+/** Con la radio sonando: la frecuencia grande y los controles. Un toque abre la radio de Civic. */
+@Composable
+private fun ColumnScope.RadioPlaying(onOpenRadio: () -> Unit) {
+    val radio = LocalContext.current.container.radio
+    val info by radio.info.collectAsStateWithLifecycle()
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        radio.startWatching()
+        onDispose { radio.stopWatching() }
+    }
+    val source = remember { MutableInteractionSource() }
+    Column(
+        Modifier
+            .weight(1f)
+            .fillMaxWidth()
+            .clickable(source, indication = null, role = Role.Button, onClickLabel = "Abrir la radio", onClick = onOpenRadio),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            (info.band ?: "Radio").uppercase(),
+            style = Civic.type.caption.copy(letterSpacing = androidx.compose.ui.unit.TextUnit(0.12f, androidx.compose.ui.unit.TextUnitType.Em)),
+            color = Civic.colors.textDim,
+        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                info.frequency ?: "--.-",
+                style = Civic.type.clock.copy(fontSize = 64.sp, lineHeight = 68.sp),
+                color = Civic.colors.text,
+                maxLines = 1,
+            )
+            Spacer(Modifier.width(Civic.space.xs))
+            Text(info.unit ?: "MHz", style = Civic.type.label, color = Civic.colors.textDim, modifier = Modifier.padding(bottom = 12.dp))
+        }
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+        RoundButton(P.SkipBackFill, "Estación anterior", 60.dp, null) { radio.seekDown() }
+        RoundButton(P.PlayFill, "Silencio", 76.dp, Civic.colors.surfaceRaised) { radio.playPause() }
+        RoundButton(P.SkipForwardFill, "Estación siguiente", 60.dp, null) { radio.seekUp() }
     }
 }
 
+/** Fuente de música: ícono en pastilla de color (como la barra), nombre, descripción y flecha. */
 @Composable
-internal fun SourceTile(icon: ImageVector, label: String, highlighted: Boolean, modifier: Modifier, onClick: () -> Unit) {
+internal fun SourceRow(
+    icon: ImageVector,
+    colors: Pair<Color, Color>,
+    title: String,
+    subtitle: String,
+    highlighted: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
     val c = Civic.colors
     val shape = RoundedCornerShape(Civic.radii.l)
-    Column(
+    Row(
         modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .clip(shape)
             .background(
                 when {
                     pressed -> c.surfacePressed
-                    highlighted -> lerp(c.surfaceRaised, c.accent, 0.22f)
+                    highlighted -> lerp(c.surfaceRaised, c.accent, 0.18f)
                     else -> c.surfaceRaised
                 },
             )
             .bevelBorder(shape)
-            .clickable(source, indication = null, role = Role.Button, onClick = onClick),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+            .clickable(source, indication = null, role = Role.Button, onClick = onClick)
+            .padding(horizontal = Civic.space.l),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = if (highlighted) c.text else c.accent, modifier = Modifier.size(30.dp))
-        Spacer(Modifier.height(Civic.space.s))
-        Text(label, style = Civic.type.label, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        AppTile(icon, colors, 48.dp)
+        Spacer(Modifier.width(Civic.space.l))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = Civic.type.title.copy(fontSize = 20.sp), color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                if (highlighted) "La última vez" else subtitle,
+                style = Civic.type.bodySmall,
+                color = c.textDim,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(P.CaretRightLight, null, tint = c.textDim, modifier = Modifier.size(22.dp))
     }
 }
 
@@ -202,13 +257,32 @@ private fun ColumnScope.Active(now: NowPlaying, onOpen: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        CoverCircle(now.art, sourceIcon(now.source), 112.dp)
-        Spacer(Modifier.height(Civic.space.l))
-        CenteredTitle(now.title.orEmpty())
+        // Portada solo si la hay (el Bluetooth no manda imagen: entonces solo texto, más grande).
+        if (now.art != null) {
+            CoverCircle(now.art, sourceIcon(now.source), 112.dp)
+            Spacer(Modifier.height(Civic.space.l))
+        } else {
+            Text(
+                sourceLabel(now.source).uppercase(),
+                style = Civic.type.caption.copy(letterSpacing = androidx.compose.ui.unit.TextUnit(0.12f, androidx.compose.ui.unit.TextUnitType.Em)),
+                color = Civic.colors.textDim,
+            )
+            Spacer(Modifier.height(Civic.space.s))
+        }
+        Text(
+            now.title.orEmpty(),
+            style = Civic.type.title.copy(fontSize = if (now.art == null) 28.sp else 22.sp, lineHeight = if (now.art == null) 34.sp else 28.sp),
+            color = Civic.colors.text,
+            maxLines = if (now.art == null) 2 else 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(2.dp))
         CenteredSubtitle(now.artist.orEmpty())
     }
-    Spacer(Modifier.height(Civic.space.s))
-    Progress(now)
+    // Línea fina que separa la canción de los controles, como en el diseño.
+    Box(Modifier.fillMaxWidth().height(1.dp).background(Civic.colors.line))
     Spacer(Modifier.height(Civic.space.s))
     Controls(playing = now.playing)
 }
@@ -246,20 +320,20 @@ private fun CenteredSubtitle(text: String) {
  */
 @Composable
 private fun ColumnScope.CoverCircle(art: androidx.compose.ui.graphics.ImageBitmap?, icon: ImageVector, size: Dp, iconTint: Color? = null) {
-    val shape = RoundedCornerShape(size * 0.28f)
+    val shape = RoundedCornerShape(Civic.radii.l)
     Box(
         Modifier
             .align(Alignment.CenterHorizontally)
             .size(size)
             .clip(shape)
-            .background(Brush.verticalGradient(listOf(lerp(Civic.colors.surfaceRaised, Civic.colors.text, 0.04f), Civic.colors.surfaceRaised)))
+            .background(Civic.colors.surfaceRaised)
             .bevelBorder(shape),
         contentAlignment = Alignment.Center,
     ) {
         if (art != null) {
             Image(art, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
         } else {
-            Icon(icon, null, tint = iconTint ?: Civic.colors.accent, modifier = Modifier.size(size * 0.40f))
+            Icon(icon, null, tint = iconTint ?: Civic.colors.textDim, modifier = Modifier.size(size * 0.36f))
         }
     }
 }
@@ -277,8 +351,8 @@ private fun Progress(now: NowPlaying) {
         }
     }
     val pos = (if (now.playing) start + ((tick - now.positionAt) * now.speed).toLong() else start).coerceIn(0, duration)
-    Box(Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(50)).background(Civic.colors.surfacePressed)) {
-        Box(Modifier.fillMaxWidth(pos.toFloat() / duration).height(5.dp).clip(RoundedCornerShape(50)).background(Civic.colors.text))
+    Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(50)).background(Civic.colors.surfacePressed)) {
+        Box(Modifier.fillMaxWidth(pos.toFloat() / duration).height(4.dp).clip(RoundedCornerShape(50)).background(Civic.colors.text))
     }
 }
 
@@ -287,14 +361,15 @@ private fun Progress(now: NowPlaying) {
 private fun Controls(playing: Boolean?) {
     val repo = LocalContext.current.container.media
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-        RoundButton(P.SkipBackFill, "Anterior", 60.dp, null) { repo.previous() }
+        // Íconos sueltos (sin círculos), como el widget de música del diseño.
+        RoundButton(P.RewindFill, "Anterior", 64.dp, null) { repo.previous() }
         RoundButton(
             if (playing == true) P.PauseFill else P.PlayFill,
             if (playing == true) "Pausa" else "Reproducir",
-            76.dp,
-            Civic.colors.surfacePressed,
+            72.dp,
+            null,
         ) { repo.playPause() }
-        RoundButton(P.SkipForwardFill, "Siguiente", 60.dp, null) { repo.next() }
+        RoundButton(P.FastForwardFill, "Siguiente", 64.dp, null) { repo.next() }
     }
 }
 
@@ -307,7 +382,9 @@ internal fun RoundButton(icon: ImageVector, label: String, size: Dp, bg: Color?,
         Modifier
             .size(size)
             .clip(CircleShape)
-            .background(if (pressed) Civic.colors.surfaceRaised else base)
+            .background(if (pressed) Civic.colors.surfacePressed else base)
+            // El botón principal (con fondo) lleva canto de vidrio; los secundarios van sueltos.
+            .let { if (bg != null) it.bevelBorder(CircleShape) else it }
             .clickable(source, indication = null, role = Role.Button, onClickLabel = label, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -335,7 +412,7 @@ internal fun openMusicApp(ctx: android.content.Context, source: MusicSource, pkg
 }
 
 internal fun sourceIcon(s: MusicSource) = when (s) {
-    MusicSource.ANDROID_AUTO -> P.NavigationArrowFill
+    MusicSource.ANDROID_AUTO -> P.AndroidLogoFill
     MusicSource.BLUETOOTH -> P.BluetoothFill
     MusicSource.RADIO -> P.RadioFill
     else -> P.MusicNotes
@@ -355,14 +432,15 @@ fun HomeCard(
     val c = Civic.colors
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
-    val brush = background ?: Brush.verticalGradient(listOf(lerp(c.surface, c.surfaceRaised, 0.6f), c.surface))
+    // En vidrio el relleno es liso: el reflejo de arriba lo pone bevelBorder.
+    val brush = background ?: if (c.isGlass) SolidColor(c.surface) else Brush.verticalGradient(listOf(lerp(c.surface, c.surfaceRaised, 0.6f), c.surface))
     Column(
         modifier
             .clip(RoundedCornerShape(Civic.radii.xl))
             .background(if (pressed) Brush.verticalGradient(listOf(c.surfacePressed, c.surfacePressed)) else brush)
             .bevelBorder(RoundedCornerShape(Civic.radii.xl))
             .let { if (onClick != null) it.clickable(source, indication = null, role = Role.Button, onClick = onClick) else it }
-            .padding(Civic.space.xl),
+            .padding(20.dp),
         content = content,
     )
 }
@@ -373,25 +451,23 @@ fun HomeCard(
  */
 @Composable
 fun CardHeader(icon: ImageVector, title: String, status: String?, tone: Tone) {
-    Row(Modifier.fillMaxWidth().height(36.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, tint = Civic.colors.text, modifier = Modifier.size(26.dp))
-        Spacer(Modifier.width(Civic.space.m))
-        Text(title, style = Civic.type.title, color = Civic.colors.text, maxLines = 1, softWrap = false)
+    // Etiqueta discreta (como los widgets de CarPlay): ícono chico y título en mayúsculas grises.
+    // Lo importante de la tarjeta es su contenido, no su nombre.
+    Row(Modifier.fillMaxWidth().height(24.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, tint = Civic.colors.textDim, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(Civic.space.s))
+        Text(
+            title.uppercase(),
+            style = Civic.type.caption.copy(letterSpacing = androidx.compose.ui.unit.TextUnit(0.10f, androidx.compose.ui.unit.TextUnitType.Em)),
+            color = Civic.colors.textDim,
+            maxLines = 1,
+            softWrap = false,
+        )
         Spacer(Modifier.weight(1f).widthIn(min = Civic.space.s))
         if (status != null) {
-            // La cápsula cede espacio (se recorta con "…") antes que el título.
-            Row(
-                Modifier
-                    .widthIn(max = 124.dp)
-                    .clip(RoundedCornerShape(50))
-                    .background(Civic.colors.surfaceRaised)
-                    .padding(horizontal = Civic.space.m, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(Modifier.size(8.dp).clip(CircleShape).background(tone.color()))
-                Spacer(Modifier.width(6.dp))
-                Text(status, style = Civic.type.caption, color = Civic.colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
+            Box(Modifier.size(7.dp).clip(CircleShape).background(tone.color()))
+            Spacer(Modifier.width(6.dp))
+            Text(status, style = Civic.type.caption, color = Civic.colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 120.dp))
         }
     }
 }

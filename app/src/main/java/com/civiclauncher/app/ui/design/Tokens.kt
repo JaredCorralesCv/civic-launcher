@@ -32,7 +32,38 @@ data class CivicPalette(
     val warn: Color,
     val bad: Color,
     val cool: Color,
+    /** Con fondo de pantalla: los mismos colores pero opacos, para diálogos y ventanas encima. */
+    val opaque: CivicPalette? = null,
+    /** Modo vidrio líquido: los bordes dibujan reflejo y brillo (ver bevelBorder). */
+    val isGlass: Boolean = false,
 )
+
+/**
+ * Versión "vidrio" (estilo CarPlay) para cuando hay fondo de pantalla: las superficies dejan ver la
+ * imagen. Es transparencia simple (sin desenfoque: la Mali-450 no puede), y solo una o dos capas
+ * encimadas, así que sigue siendo barato de dibujar.
+ */
+fun CivicPalette.glass(): CivicPalette = if (isDark) {
+    copy(
+        background = Color.Transparent,
+        surface = Color(0x660B0D11),
+        surfaceRaised = Color(0x14FFFFFF),
+        surfacePressed = Color(0x2EFFFFFF),
+        line = Color(0x24FFFFFF),
+        opaque = this,
+        isGlass = true,
+    )
+} else {
+    copy(
+        background = Color.Transparent,
+        surface = Color(0x8CFFFFFF),
+        surfaceRaised = Color(0x66FFFFFF),
+        surfacePressed = Color(0x1A000000),
+        line = Color(0x66FFFFFF),
+        opaque = this,
+        isGlass = true,
+    )
+}
 
 /** Colores de noche (por defecto): fondo casi negro para no deslumbrar al manejar. */
 val NightPalette = CivicPalette(
@@ -98,10 +129,11 @@ data class CivicSizes(
 
 @Immutable
 data class CivicRadii(
-    val s: Dp = 10.dp,
-    val m: Dp = 16.dp,
-    val l: Dp = 24.dp,
-    val xl: Dp = 32.dp,
+    // Esquinas contenidas: más "instrumento" que "app de juguete".
+    val s: Dp = 8.dp,
+    val m: Dp = 12.dp,
+    val l: Dp = 16.dp,
+    val xl: Dp = 22.dp,
 )
 
 internal val LocalPalette = staticCompositionLocalOf { NightPalette }

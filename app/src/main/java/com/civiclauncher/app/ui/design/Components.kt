@@ -30,6 +30,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -46,10 +49,53 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun Modifier.bevelBorder(shape: androidx.compose.ui.graphics.Shape): Modifier {
     val c = Civic.colors
+    if (c.isGlass) return liquidGlass(shape, c.isDark)
     val top = lerp(c.line, c.text, if (c.isDark) 0.22f else 0.08f)
     val bottom = lerp(c.surface, c.line, 0.45f)
     return this.border(1.dp, androidx.compose.ui.graphics.Brush.verticalGradient(listOf(top, bottom)), shape)
 }
+
+/**
+ * "Vidrio líquido" (estilo CarPlay / iOS 26) sin desenfoque, que la Mali-450 no puede:
+ *  1. Reflejo: un degradado blanco suave en la mitad de arriba, como luz sobre el vidrio.
+ *  2. Canto: un borde con brillo en diagonal, fuerte arriba a la izquierda, casi nada en medio y un
+ *     segundo brillo abajo a la derecha. Es lo que da la sensación de grosor del vidrio.
+ *  3. Línea interior tenue para separar el canto del relleno.
+ * Se dibuja entre el fondo y el contenido, con formas y degradados en caché: dos trazos y un relleno.
+ */
+private fun Modifier.liquidGlass(shape: androidx.compose.ui.graphics.Shape, dark: Boolean): Modifier =
+    this.drawWithCache {
+        val outline = shape.createOutline(size, layoutDirection, this)
+        val rim = 1.dp.toPx()
+        val inset = rim * 1.6f
+        val innerShape = shape.createOutline(
+            androidx.compose.ui.geometry.Size((size.width - inset * 2).coerceAtLeast(0f), (size.height - inset * 2).coerceAtLeast(0f)),
+            layoutDirection,
+            this,
+        )
+        val sheen = androidx.compose.ui.graphics.Brush.verticalGradient(
+            0f to Color.White.copy(alpha = if (dark) 0.045f else 0.18f),
+            0.4f to Color.Transparent,
+            startY = 0f,
+            endY = size.height,
+        )
+        val edge = androidx.compose.ui.graphics.Brush.linearGradient(
+            0f to Color.White.copy(alpha = if (dark) 0.30f else 0.75f),
+            0.22f to Color.White.copy(alpha = if (dark) 0.07f else 0.30f),
+            0.70f to Color.White.copy(alpha = if (dark) 0.03f else 0.20f),
+            1f to Color.White.copy(alpha = if (dark) 0.14f else 0.55f),
+            start = androidx.compose.ui.geometry.Offset.Zero,
+            end = androidx.compose.ui.geometry.Offset(size.width, size.height),
+        )
+        val inner = Color.Black.copy(alpha = if (dark) 0.22f else 0.06f)
+        onDrawBehind {
+            drawOutline(outline, sheen)
+            translate(inset, inset) {
+                drawOutline(innerShape, inner, style = androidx.compose.ui.graphics.drawscope.Stroke(1f))
+            }
+            drawOutline(outline, edge, style = androidx.compose.ui.graphics.drawscope.Stroke(rim * 2))
+        }
+    }
 
 /** Tono semántico: el color sale de la paleta activa (día o noche). */
 enum class Tone { Neutral, Accent, Ok, Warn, Bad, Cool }
@@ -93,6 +139,7 @@ fun CivicCard(
         modifier
             .clip(RoundedCornerShape(Civic.radii.l))
             .background(bg)
+            .let { if (Civic.colors.isGlass) it.bevelBorder(RoundedCornerShape(Civic.radii.l)) else it }
             .press(source, true, Role.Button, onClick)
             .padding(padding),
         content = content,

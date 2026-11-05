@@ -105,7 +105,8 @@ fun AdapterPickerDialog(
     DisposableEffect(Unit) { onDispose { scanner.stop() } }
     val scan = rememberPermissionAction(scanner.permissions()) { scanner.start() }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    // Ventana encima: opaca aunque haya fondo de pantalla.
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) { com.civiclauncher.app.ui.design.OpaqueSurfaces {
         Column(
             Modifier
                 .width(640.dp)
@@ -146,7 +147,7 @@ fun AdapterPickerDialog(
                 items(devices, key = { it.address }) { d -> CandidateRow(d) { onPick(d) } }
             }
         }
-    }
+    } }
 }
 
 @Composable

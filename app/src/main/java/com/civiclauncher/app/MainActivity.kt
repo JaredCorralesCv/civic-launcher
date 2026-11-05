@@ -40,13 +40,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.hasCategory(Intent.CATEGORY_HOME)) homePresses.tryEmit(Unit)
+        // Volver desde la radio (u otra app que Civic abrió de paso) no es "presionar inicio":
+        // se queda en la pantalla donde estabas.
+        if (intent.hasCategory(Intent.CATEGORY_HOME) && !intent.getBooleanExtra(EXTRA_STAY, false)) homePresses.tryEmit(Unit)
     }
 
     override fun onResume() {
         super.onResume()
         // Al despertar de la suspensión, actualiza la hora sin esperar al siguiente minuto.
         container.clock.refresh()
+        // Si "Música BT" pausó al salir de ella, Civic reanuda la canción.
+        container.media.onLauncherResumed()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -60,5 +64,10 @@ class MainActivity : ComponentActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             hide(WindowInsetsCompat.Type.systemBars())
         }
+    }
+
+    companion object {
+        /** En un intent de inicio: regresar a Civic sin ir a la pantalla de Inicio. */
+        const val EXTRA_STAY = "com.civiclauncher.app.STAY"
     }
 }

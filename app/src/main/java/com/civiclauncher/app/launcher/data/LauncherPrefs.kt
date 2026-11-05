@@ -35,6 +35,20 @@ class LauncherPrefs(context: Context) {
         sp.edit().putString("github_repo", clean).apply()
     }
 
+    private val _autoHideBar = MutableStateFlow(sp.getBoolean("auto_hide_bar", true))
+    /** La barra de abajo se esconde sola tras unos segundos sin tocar la pantalla. */
+    val autoHideBar: StateFlow<Boolean> = _autoHideBar.asStateFlow()
+
+    fun setAutoHideBar(on: Boolean) {
+        _autoHideBar.value = on
+        sp.edit().putBoolean("auto_hide_bar", on).apply()
+    }
+
+    /** Que la música empiece sola al conectar el celular por Bluetooth (activado por defecto). */
+    var autoplayBluetooth: Boolean
+        get() = sp.getBoolean("autoplay_bt", true)
+        set(v) = sp.edit().putBoolean("autoplay_bt", v).apply()
+
     /** Ya pedimos el permiso de ubicación una vez; no insistir en cada arranque. */
     var askedLocation: Boolean
         get() = sp.getBoolean("asked_location", false)

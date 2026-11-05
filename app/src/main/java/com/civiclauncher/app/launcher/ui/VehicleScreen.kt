@@ -1,6 +1,9 @@
 package com.civiclauncher.app.launcher.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -52,12 +55,13 @@ fun VehicleScreen() {
     val data = repo.data.collectAsStateWithLifecycle()
     var picker by remember { mutableStateOf(false) }
 
-    Column(Modifier.fillMaxSize().padding(Civic.space.xl), verticalArrangement = Arrangement.spacedBy(Civic.space.l)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    // Mismos márgenes que el resto de las pantallas (16 a los lados, 12 arriba y abajo).
+    Column(Modifier.fillMaxSize().padding(horizontal = PAGE_GUTTER, vertical = Civic.space.m), verticalArrangement = Arrangement.spacedBy(Civic.space.m)) {
+        Row(Modifier.height(52.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Vehículo", style = Civic.type.headline, color = Civic.colors.text, modifier = Modifier.weight(1f))
             ObdStatusPill(state, config)
             Spacer(Modifier.width(Civic.space.m))
-            CivicButton("Adaptador", { picker = true }, kind = ButtonKind.Secondary, icon = P.Bluetooth)
+            CivicButton("Adaptador", { picker = true }, kind = ButtonKind.Secondary, icon = P.Bluetooth, compact = true)
         }
 
         if (config.mode == ObdMode.NONE) {
@@ -125,24 +129,26 @@ private fun StateBanner(state: EngineState, data: State<VehicleData>) {
 }
 
 @Composable
-private fun Dashboard(data: State<VehicleData>) {
+private fun androidx.compose.foundation.layout.ColumnScope.Dashboard(data: State<VehicleData>) {
     fun value(spec: PidSpec, default: Float): () -> Float = { data.value[spec].fresh()?.value?.toFloat() ?: default }
 
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Civic.space.l)) {
+    // Los relojes toman el espacio que sobre; la fila de abajo, su alto natural.
+    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(Civic.space.m)) {
         GaugeCard { Gauge(value(Pids.RPM, 0f), 0f, 7000f, "Motor", "RPM", Modifier.align(Alignment.CenterHorizontally), warnAt = 6000f, dangerAt = 6800f, majorTicks = 7) }
         GaugeCard { Gauge(value(Pids.SPEED, 0f), 0f, 180f, "Velocidad", "km/h", Modifier.align(Alignment.CenterHorizontally)) }
         GaugeCard { Gauge(value(Pids.COOLANT_TEMP, 40f), 40f, 120f, "Temperatura", "°C", Modifier.align(Alignment.CenterHorizontally), warnAt = 100f, dangerAt = 108f, majorTicks = 4) }
     }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Civic.space.l)) {
-        BatteryCard(data, Modifier.weight(1f))
-        LiveValue(data, Pids.INTAKE_AIR_TEMP, P.Thermometer, "Admisión", Modifier.weight(1f))
-        LoadCard(data, Modifier.weight(1.4f))
+    // Las tres tarjetas de abajo, del mismo alto (antes "Carga del motor" era más alta).
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Civic.space.m)) {
+        BatteryCard(data, Modifier.weight(1f).fillMaxHeight())
+        LiveValue(data, Pids.INTAKE_AIR_TEMP, P.Thermometer, "Admisión", Modifier.weight(1f).fillMaxHeight())
+        LoadCard(data, Modifier.weight(1.4f).fillMaxHeight())
     }
 }
 
 @Composable
 private fun RowScope.GaugeCard(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
-    CivicCard(Modifier.weight(1f), padding = PaddingValues(Civic.space.m), content = content)
+    CivicCard(Modifier.weight(1f).fillMaxHeight(), padding = PaddingValues(Civic.space.m), content = content)
 }
 
 @Composable

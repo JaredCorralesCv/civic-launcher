@@ -104,14 +104,66 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
 
     private var bt: MediaController? = null
     private var lastBtResume = 0L
+    private var lastBtState: Int? = null
+    private var lastBtPauseAt = 0L
+    private var lastLauncherResume = 0L
+
+    /**
+     * Civic volvió al frente. La app "Música BT" del fabricante manda PAUSA al celular cuando sales
+     * con "atrás" (se vio en el registro: onBackPressed → tecla 70 dos veces). Si la música se pausó
+     * en ese mismo instante, la reanudamos: tú no pediste pausarla.
+     */
+    fun onLauncherResumed() {
+        lastLauncherResume = SystemClock.elapsedRealtime()
+        if (lastLauncherResume - lastBtPauseAt < PAUSE_ON_EXIT_MS) undoExitPause()
+    }
+
+    /**
+     * Elegiste otra fuente (la radio): durante [ms] Civic no vuelve a tomar el Bluetooth por su cuenta
+     * (ni al ver que el celular suena, ni para deshacer una pausa).
+     */
+    fun yieldToOtherSource(ms: Long = 8_000) {
+        yieldUntil = SystemClock.elapsedRealtime() + ms
+        handler.removeCallbacksAndMessages(AUTOPLAY)
+    }
+
+    private var yieldUntil = 0L
+
+    private fun undoExitPause() {
+        // Solo si el audio sigue siendo del Bluetooth: si la pausa fue porque cambiaste a la radio,
+        // no se toca.
+        if (SystemClock.elapsedRealtime() < yieldUntil || SysProp.get("sys.sourcing.package") != VendorApps.BLUETOOTH) {
+            lastBtPauseAt = 0L
+            return
+        }
+        lastBtPauseAt = 0L
+        android.util.Log.i(TAG, "Música BT pausó al salir: reanudando")
+        handler.postDelayed({ resumeBluetooth() }, 400)
+    }
 
     private val btCallback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackState?) {
+            // Registro para diagnosticar pausas inesperadas (adb logcat -s CivicBT). El Bluetooth avisa
+            // cada segundo (por el avance de la canción): solo se anota cuando cambia el estado.
+            // ¿El celular PASÓ a sonar ahora mismo? (no solo "sigue sonando": al cambiar a la radio,
+            // el Bluetooth todavía avisa "sonando" medio segundo y no hay que confundirlo).
+            val becamePlaying = state?.state == PlaybackState.STATE_PLAYING && lastBtState != PlaybackState.STATE_PLAYING
+            if (state?.state != lastBtState) {
+                val wasPlaying = lastBtState == PlaybackState.STATE_PLAYING
+                lastBtState = state?.state
+                android.util.Log.i(TAG, "BT estado=${state?.state} fuente=${SysProp.get("sys.sourcing.package")}")
+                if (wasPlaying && state?.state == PlaybackState.STATE_PAUSED) {
+                    lastBtPauseAt = SystemClock.elapsedRealtime()
+                    // La pausa llegó justo cuando volviste a Civic: es la de "Música BT" al salir.
+                    if (lastBtPauseAt - lastLauncherResume < PAUSE_ON_EXIT_MS) undoExitPause()
+                }
+            }
             // El celular empezó a sonar (le diste play en el teléfono). Si la pantalla no tiene al
             // Bluetooth como fuente, lo pausaría enseguida: lo tomamos y confirmamos el play.
-            if (state?.state == PlaybackState.STATE_PLAYING && SysProp.get("sys.sourcing.package") != VendorApps.BLUETOOTH) {
+            if (becamePlaying && SysProp.get("sys.sourcing.package") != VendorApps.BLUETOOTH) {
                 val now = SystemClock.elapsedRealtime()
-                if (now - lastBtResume > 4_000) {
+                // Si acabas de elegir otra fuente (la radio), esa decisión manda.
+                if (now - lastBtResume > 4_000 && now > yieldUntil) {
                     lastBtResume = now
                     resumeBluetooth()
                 }
@@ -135,15 +187,81 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         runCatching { context.sendBroadcast(android.content.Intent(ACQUIRE_A2DP)) }
     }
 
-    /** Toma la fuente y le pide al celular que suene. false si no hay celular conectado. */
+    /**
+     * Toma la fuente y le pide al celular que suene. false si no hay celular conectado.
+     * Si la sesión de Bluetooth todavía no aparece como "activa" (pasa justo al conectar), se pide
+     * directo al servicio de música del Bluetooth (A2dpMediaBrowserService).
+     */
     private fun resumeBluetooth(): Boolean {
         val c = bt ?: runCatching { msm.getActiveSessions(NotificationCollector.component(context)) }
             .getOrDefault(emptyList()).firstOrNull { it.packageName == BT_SESSION }
-            ?: return false
+        if (c == null) return playThroughBrowser()
+        android.util.Log.i(TAG, "tomando el Bluetooth y pidiendo play")
         claimBluetooth()
         // Un instante para que el gestor de fuentes cambie la ruta del audio antes del play.
         handler.postDelayed({ runCatching { c.transportControls.play() } }, 350)
         return true
+    }
+
+    /** Plan B: conectarse al servicio de música del Bluetooth para obtener su sesión y dar play. */
+    private fun playThroughBrowser(): Boolean {
+        if (!isPhoneAudioConnected()) return false
+        android.util.Log.i(TAG, "sin sesión activa: pidiendo play al servicio A2DP")
+        claimBluetooth()
+        var browser: android.media.browse.MediaBrowser? = null
+        browser = android.media.browse.MediaBrowser(
+            context,
+            android.content.ComponentName(BT_SESSION, "$BT_SESSION.a2dpsink.mbs.A2dpMediaBrowserService"),
+            object : android.media.browse.MediaBrowser.ConnectionCallback() {
+                override fun onConnected() {
+                    runCatching { MediaController(context, browser!!.sessionToken).transportControls.play() }
+                        .onFailure { android.util.Log.w(TAG, "play por el servicio falló", it) }
+                    handler.postDelayed({ runCatching { browser?.disconnect() } }, 2_000)
+                }
+                override fun onConnectionFailed() {
+                    android.util.Log.w(TAG, "no se pudo conectar al servicio A2DP")
+                }
+            },
+            null,
+        )
+        runCatching { browser.connect() }.onFailure { return false }
+        return true
+    }
+
+    /** ¿Hay un celular conectado como bocina (A2DP sink)? Lo dice el gestor de fuentes del fabricante. */
+    @android.annotation.SuppressLint("MissingPermission", "WrongConstant")
+    private fun isPhoneAudioConnected(): Boolean = phoneConnected || runCatching {
+        // 11 = BluetoothProfile.A2DP_SINK (oculto en la API pública).
+        android.bluetooth.BluetoothAdapter.getDefaultAdapter()?.getProfileConnectionState(11) ==
+            android.bluetooth.BluetoothAdapter.STATE_CONNECTED
+    }.getOrDefault(false)
+
+    /** Lo actualiza [PhoneWatcher] con cada conexión/desconexión del celular. */
+    @Volatile var phoneConnected = false
+
+    /**
+     * El celular se acaba de conectar por Bluetooth: que la música empiece sola, como en cualquier
+     * carro. Justo al conectar, el celular a veces ignora el play (se vio en el registro), así que se
+     * insiste unas veces hasta que de verdad suene.
+     */
+    fun onPhoneConnected() {
+        phoneConnected = true
+        refresh()
+        val delays = longArrayOf(3_000, 6_000, 10_000, 15_000)
+        handler.removeCallbacksAndMessages(AUTOPLAY)
+        val start = SystemClock.uptimeMillis()
+        delays.forEachIndexed { i, d ->
+            handler.postAtTime({
+                if (lastBtState == PlaybackState.STATE_PLAYING) return@postAtTime
+                val ok = resumeBluetooth()
+                android.util.Log.i(TAG, "celular conectado: intento ${i + 1}, pedido=$ok")
+            }, AUTOPLAY, start + d)
+        }
+    }
+
+    fun onPhoneDisconnected() {
+        phoneConnected = false
+        handler.removeCallbacksAndMessages(AUTOPLAY)
     }
 
     /**
@@ -307,5 +425,10 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         const val BT_SESSION = "com.android.bluetooth"
         /** Aviso que el gestor de fuentes del fabricante entiende como "el audio ahora es Bluetooth". */
         const val ACQUIRE_A2DP = "net.easyconn.a2dp.acquire"
+        const val TAG = "CivicBT"
+        /** Ventana para decidir que una pausa fue la de "Música BT" al salir (se vieron ~50 ms). */
+        const val PAUSE_ON_EXIT_MS = 1_500L
+        /** Marca para poder cancelar los reintentos de reproducir al conectar. */
+        val AUTOPLAY = Any()
     }
 }
