@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -276,10 +277,23 @@ private fun appLabel(source: MusicSource, pkg: String, ownPkg: String, appName: 
 internal fun PlayerFrame(tint: Color?, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
     val base = Civic.colors.background
     val top = if (tint != null) lerp(base, tint, if (Civic.colors.isDark) 0.30f else 0.22f) else base
+    // El contenido baja a centrarse cuando la barra de abajo se esconde, pero el fondo teñido debe
+    // cubrir SIEMPRE toda la pantalla: si se moviera con el contenido, arriba quedaría una franja
+    // sin teñir (y abajo otra). Se dibuja hacia afuera de sus propios bordes para compensar.
+    val shift = LocalBarShift.current
+    val brush = Brush.verticalGradient(listOf(top, base))
     Column(
         Modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(top, base)))
+            .drawBehind {
+                val up = shift.toPx()
+                val down = BAR_SPACE.toPx() - up
+                drawRect(
+                    brush,
+                    topLeft = androidx.compose.ui.geometry.Offset(0f, -up),
+                    size = androidx.compose.ui.geometry.Size(size.width, size.height + up + down),
+                )
+            }
             .padding(horizontal = PAGE_GUTTER, vertical = Civic.space.m),
         content = content,
     )

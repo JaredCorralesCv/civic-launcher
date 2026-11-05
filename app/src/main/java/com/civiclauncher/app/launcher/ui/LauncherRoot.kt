@@ -255,7 +255,7 @@ private const val BAR_TIMEOUT_MS = 6_000L
 val LocalBarShift = androidx.compose.runtime.compositionLocalOf { 0.dp }
 
 /** Alto que ocupa la barra de abajo: 80 dp de barra + 12 dp de margen inferior. */
-private val BAR_SPACE = 92.dp
+internal val BAR_SPACE = 92.dp
 
 /** Dos puntitos que dicen en qué página estás (Inicio / Apps), como en CarPlay. */
 @Composable
