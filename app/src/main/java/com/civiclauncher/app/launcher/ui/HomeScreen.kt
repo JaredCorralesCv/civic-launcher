@@ -81,15 +81,17 @@ fun HomeScreen(onOpen: (Dest) -> Unit) {
     // accesos; a la derecha el mapa, la música y una columna con dos tarjetas chicas.
     // Un solo bloque: riel y tarjetas comparten borde de arriba y de abajo (sin franja vacía arriba).
     // Al esconderse la barra de abajo, todo el bloque baja junto a quedar centrado.
+    // Tres zonas con jerarquía clara: riel fino (hora y estado), el MAPA grande (lo más importante
+    // al manejar) y una sola columna a la derecha con dos tarjetas del mismo estilo: Música y Vehículo.
+    // Sin accesos repetidos: Mapa, Radio, Android Auto y Bluetooth ya están en la barra de abajo.
     Column(Modifier.fillMaxSize().padding(horizontal = PAGE_GUTTER, vertical = Civic.space.m)) {
         TimezoneWarning()
         Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(Civic.space.m)) {
             HomeRail(onOpen)
-            MapCard(Modifier.weight(0.95f).fillMaxHeight(), onOpen = { onOpen(Dest.MAP) })
-            MusicCard(Modifier.weight(1.1f).fillMaxHeight(), onOpen = { onOpen(Dest.MUSIC) }, onOpenRadio = { onOpen(Dest.RADIO) })
-            Column(Modifier.weight(1.1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Civic.space.m)) {
-                SpeedCard(Modifier.weight(1.15f).fillMaxWidth()) { onOpen(Dest.VEHICLE) }
-                EngineCard(Modifier.weight(0.85f).fillMaxWidth()) { onOpen(Dest.VEHICLE) }
+            MapCard(Modifier.weight(1.3f).fillMaxHeight(), onOpen = { onOpen(Dest.MAP) })
+            Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Civic.space.m)) {
+                CompactMusicCard(Modifier.weight(1f).fillMaxWidth(), onOpen = { onOpen(Dest.MUSIC) }, onOpenRadio = { onOpen(Dest.RADIO) })
+                VehicleSummaryCard(Modifier.weight(1f).fillMaxWidth()) { onOpen(Dest.VEHICLE) }
             }
         }
     }
@@ -116,21 +118,41 @@ private fun HomeRail(onOpen: (Dest) -> Unit) {
             .padding(vertical = Civic.space.m),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // Solo la hora, el estado y dos accesos discretos: lo demás vive en la barra de abajo.
         RailClock()
         Spacer(Modifier.height(Civic.space.xs))
         RailStatus()
         Spacer(Modifier.weight(1f))
-        RailButton(P.MapTrifoldFill, "Mapa", BarColors.GREEN) { onOpen(Dest.MAP) }
-        Spacer(Modifier.height(Civic.space.m))
-        RailButton(P.MusicNotesFill, "Música", BarColors.RED) { onOpen(Dest.MUSIC) }
-        Spacer(Modifier.height(Civic.space.m))
-        RailButton(P.AndroidLogoFill, "Android Auto", BarColors.ANDROID) {
-            if (!c.apps.launchPackage(com.civiclauncher.app.launcher.data.VendorApps.ANDROID_AUTO)) Toast.makeText(ctx, "AutoKit no está instalado", Toast.LENGTH_SHORT).show()
-        }
+        // En medio, tus últimas apps (como el riel de CarPlay). Vacío hasta que abras alguna.
+        RecentApps()
         Spacer(Modifier.weight(1f))
         // Abajo, discretos: todas las apps y Ajustes (antes el engrane ocupaba una franja arriba).
         TopIcon(P.SquaresFourLight, "Todas las apps") { onOpen(Dest.APPS) }
         TopIcon(P.GearSixLight, "Ajustes") { onOpen(Dest.SETTINGS) }
+    }
+}
+
+/** Las últimas 3 apps abiertas desde Civic, con su ícono real. */
+@Composable
+private fun RecentApps() {
+    val apps = LocalContext.current.container.apps
+    val recent by apps.recent.collectAsStateWithLifecycle()
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(Civic.space.m)) {
+        recent.forEach { app ->
+            val icon by androidx.compose.runtime.produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, app.pkg) { value = apps.icon(app) }
+            val source = remember { MutableInteractionSource() }
+            val pressed by source.collectIsPressedAsState()
+            Box(
+                Modifier
+                    .size(52.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (pressed) Civic.colors.surfacePressed else Color.Transparent)
+                    .clickable(source, indication = null, role = Role.Button, onClickLabel = app.label) { apps.launch(app) },
+                contentAlignment = Alignment.Center,
+            ) {
+                icon?.let { Image(it, app.label, modifier = Modifier.size(44.dp)) }
+            }
+        }
     }
 }
 
@@ -448,7 +470,7 @@ private fun RpmBar(rpm: Double?) {
                     onDrawBehind {
                         for (i in 0 until n) {
                             val color = when {
-                                i >= lit -> c.surfaceRaised
+                                i >= lit -> c.track
                                 i >= n * 6 / 7 -> c.bad
                                 i >= n * 5 / 7 -> c.warn
                                 else -> c.accent

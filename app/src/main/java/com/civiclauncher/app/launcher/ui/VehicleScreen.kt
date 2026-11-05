@@ -170,7 +170,7 @@ private fun <T> GlassTabs(items: List<T>, selected: T, label: (T) -> String, onS
                     .background(
                         when {
                             pressed -> Civic.colors.surfacePressed
-                            on -> Civic.colors.surfacePressed
+                            on -> Civic.colors.selected
                             else -> Color.Transparent
                         },
                     )

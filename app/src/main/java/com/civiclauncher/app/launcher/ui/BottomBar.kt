@@ -117,7 +117,7 @@ private fun NavPill(icon: ImageVector, selectedIcon: ImageVector, label: String,
             .background(
                 when {
                     pressed -> c.surfacePressed
-                    selected -> c.surfacePressed
+                    selected -> c.selected
                     else -> c.surface
                 },
             )
@@ -248,7 +248,7 @@ private fun RowScope.BarItem(icon: ImageVector, selectedIcon: ImageVector, label
             .background(
                 when {
                     pressed -> c.surfacePressed
-                    selected -> c.surfaceRaised
+                    selected -> c.selected
                     else -> Color.Transparent
                 },
             )

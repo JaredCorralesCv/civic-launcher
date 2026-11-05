@@ -82,8 +82,28 @@ class AppsRepository(private val context: Context, private val scope: CoroutineS
                 .setClassName(app.pkg, app.activity)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED),
         )
+        rememberRecent(app)
         true
     }.getOrDefault(false)
+
+    // ------------------------------------------------------------------ Recientes
+
+    private val sp = context.getSharedPreferences("apps", Context.MODE_PRIVATE)
+    private val _recent = MutableStateFlow(loadRecent())
+    /** Las últimas apps que abriste desde Civic (la más reciente primero), para el riel de Inicio. */
+    val recent: StateFlow<List<LaunchableApp>> = _recent.asStateFlow()
+
+    private fun loadRecent(): List<LaunchableApp> =
+        sp.getString("recent", "").orEmpty().split('\n').mapNotNull { line ->
+            val parts = line.split('\t')
+            if (parts.size == 3) LaunchableApp(parts[0], parts[1], parts[2]) else null
+        }
+
+    private fun rememberRecent(app: LaunchableApp) {
+        val list = (listOf(app) + _recent.value.filterNot { it.pkg == app.pkg }).take(MAX_RECENT)
+        _recent.value = list
+        sp.edit().putString("recent", list.joinToString("\n") { "${it.pkg}\t${it.activity}\t${it.label}" }).apply()
+    }
 
     /** Abre una app por paquete (radio, AutoKit...). Falso si no está instalada. */
     fun launchPackage(pkg: String): Boolean {
@@ -110,6 +130,7 @@ class AppsRepository(private val context: Context, private val scope: CoroutineS
     }
 
     private companion object {
+        const val MAX_RECENT = 3
         const val ICON_PX = 96
     }
 }

@@ -36,6 +36,13 @@ data class CivicPalette(
     val opaque: CivicPalette? = null,
     /** Modo vidrio líquido: los bordes dibujan reflejo y brillo (ver bevelBorder). */
     val isGlass: Boolean = false,
+    /**
+     * Fondo de lo SELECCIONADO (pestaña activa, botón de la barra abierto). De noche, un vidrio más
+     * claro; de día, casi blanco: nunca un bloque gris oscuro sobre un fondo claro.
+     */
+    val selected: Color = surfaceRaised,
+    /** Pista de los relojes y barras: tiene que verse sobre cualquier fondo. */
+    val track: Color = surfaceRaised,
 )
 
 /**
@@ -52,6 +59,8 @@ fun CivicPalette.glass(): CivicPalette = if (isDark) {
         line = Color(0x24FFFFFF),
         opaque = this,
         isGlass = true,
+        selected = Color(0x33FFFFFF),
+        track = Color(0x24FFFFFF),
     )
 } else {
     copy(
@@ -62,6 +71,8 @@ fun CivicPalette.glass(): CivicPalette = if (isDark) {
         line = Color(0x66FFFFFF),
         opaque = this,
         isGlass = true,
+        selected = Color(0xE6FFFFFF),
+        track = Color(0x1F000000),
     )
 }
 

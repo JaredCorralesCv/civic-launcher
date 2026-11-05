@@ -82,7 +82,7 @@ fun Gauge(
                 }
                 fun fractionOf(v: Float) = ((v - min) / (max - min)).coerceIn(0f, 1f)
                 onDrawBehind {
-                    drawArc(c.surfaceRaised, START_ANGLE, SWEEP, false, topLeft, arcSize, style = trackStroke)
+                    drawArc(c.track, START_ANGLE, SWEEP, false, topLeft, arcSize, style = trackStroke)
                     ticks.forEach { (a, b) -> drawLine(c.line, a, b, strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round) }
                     val v = animated.value
                     val color = when {

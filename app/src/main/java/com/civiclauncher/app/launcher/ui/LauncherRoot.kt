@@ -202,7 +202,8 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
                     // En Inicio el contenedor no se mueve (la hora se queda arriba): los puntitos bajan con las tarjetas.
                     PageDots(
                         selected = if (dest == Dest.HOME) 0 else 1,
-                        Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp),
+                        // Arriba y discretos: abajo ya están la barra o su rayita.
+                        Modifier.align(Alignment.TopCenter).padding(top = 3.dp),
                     )
                 }
             }

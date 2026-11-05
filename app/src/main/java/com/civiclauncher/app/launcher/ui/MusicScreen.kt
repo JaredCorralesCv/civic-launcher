@@ -198,7 +198,7 @@ private fun TimedProgressRow(now: NowPlaying) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(formatTime(pos), style = timeStyle, color = Civic.colors.text)
         Spacer(Modifier.width(Civic.space.m))
-        Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(50)).background(Civic.colors.surfacePressed)) {
+        Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(50)).background(Civic.colors.track)) {
             Box(Modifier.fillMaxWidth(pos.toFloat() / duration).height(8.dp).clip(RoundedCornerShape(50)).background(Civic.colors.text.copy(alpha = 0.85f)))
         }
         Spacer(Modifier.width(Civic.space.m))
@@ -456,7 +456,7 @@ private fun RowScope.Segment(icon: ImageVector, selectedIcon: ImageVector, label
             .background(
                 when {
                     pressed -> c.surfacePressed
-                    selected -> c.surfacePressed
+                    selected -> c.selected
                     else -> Color.Transparent
                 },
             )
