@@ -123,9 +123,12 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
             lastSaveMs = now
             saveTrip(s)
         }
+        // Redondeado a lo que se muestra (una décima): si no cambia lo visible, StateFlow no emite y la
+        // pantalla no se vuelve a dibujar por diferencias que nadie ve.
+        fun tenth(v: Double?) = v?.let { Math.round(it * 10) / 10.0 }
         _live.value = LiveDerived(
-            kmPerLiter = FuelModel.kmPerLiter(d, now),
-            litersPerHour = FuelModel.litersPerHour(d, now),
+            kmPerLiter = tenth(FuelModel.kmPerLiter(d, now)),
+            litersPerHour = tenth(FuelModel.litersPerHour(d, now)),
             gear = GearEstimator.estimate(d[Pids.RPM].freshAt(now)?.value, d[Pids.SPEED].freshAt(now)?.value),
             alerts = VehicleAlerts.evaluate(d, diagnostics.value, now),
         )

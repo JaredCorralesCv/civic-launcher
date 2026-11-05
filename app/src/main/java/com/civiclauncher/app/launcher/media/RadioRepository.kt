@@ -57,6 +57,7 @@ class RadioRepository(
     private var pollJob: Job? = null
     private var watchers = 0
     private var player: Any? = null
+    private var lastConnectTry = Long.MIN_VALUE / 2
 
     /** Llamar al mostrar la pantalla de radio; [stopWatching] al salir. Cuenta referencias. */
     fun startWatching() {
@@ -77,7 +78,12 @@ class RadioRepository(
 
     private fun read(): RadioInfo {
         val isSource = SysProp.get("sys.sourcing.package") == VendorApps.RADIO
-        val p = player ?: connect().also { player = it }
+        // Si el servicio no existe (otra pantalla, el emulador), no buscarlo por reflexión cada segundo.
+        val now = android.os.SystemClock.elapsedRealtime()
+        val p = player ?: if (now - lastConnectTry < 30_000) null else {
+            lastConnectTry = now
+            connect().also { player = it }
+        }
         val rawFreq = p?.let { call(it, "getFreq") as? Number }?.toInt()
         val rawBand = p?.let { call(it, "getUiband") ?: call(it, "getBand") }?.toString()
         val am = rawBand?.contains("AM", ignoreCase = true) == true || (rawFreq != null && rawFreq in 520..1710)

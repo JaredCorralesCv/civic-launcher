@@ -149,6 +149,30 @@ object ElmParser {
         return pairs.filter { (a, b) -> a != 0 || b != 0 }.map { (a, b) -> dtcName(a, b) }.distinct()
     }
 
+    /**
+     * Respuesta a una pregunta de varios PIDs a la vez ("010C0D11"): 41 · PID · datos · PID · datos…
+     * Si el carro no tiene alguno, simplemente no viene. Devuelve null si la respuesta no se pudo
+     * recorrer completa (entonces conviene volver a preguntar de uno en uno).
+     */
+    fun parseMulti(raw: String, specs: List<PidSpec>): Map<Int, Double>? {
+        if (cleanLines(raw).any { it == "NO DATA" }) return emptyMap()
+        val bytes = payload(raw, 0x41) ?: return null
+        val byPid = specs.associateBy { it.pid }
+        val out = mutableMapOf<Int, Double>()
+        var i = 1
+        while (i < bytes.size) {
+            // Una respuesta larga puede traer más "41" intercalados (una por computadora): se saltan.
+            if (bytes[i] == 0x41 && byPid[bytes[i]] == null) { i++; continue }
+            val spec = byPid[bytes[i]] ?: return if (out.isEmpty()) null else out
+            // Datos incompletos (respuesta cortada): lo que ya se leyó sí sirve.
+            if (i + spec.bytes >= bytes.size) return if (out.isEmpty()) null else out
+            val data = IntArray(spec.bytes) { k -> bytes[i + 1 + k] }
+            out[spec.pid] = spec.decode(data)
+            i += 1 + spec.bytes
+        }
+        return out
+    }
+
     /** Dos bytes → "P0420". Los 2 bits altos dicen el sistema (P motor, C chasis, B carrocería, U red). */
     fun dtcName(a: Int, b: Int): String {
         val letter = "PCBU"[(a shr 6) and 0x3]

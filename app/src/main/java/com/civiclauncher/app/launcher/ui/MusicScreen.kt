@@ -286,7 +286,7 @@ internal fun PlayerFrame(tint: Color?, content: @Composable androidx.compose.fou
         Modifier
             .fillMaxSize()
             .drawBehind {
-                val up = shift.toPx()
+                val up = shift.value.toPx()
                 val down = BAR_SPACE.toPx() - up
                 drawRect(
                     brush,

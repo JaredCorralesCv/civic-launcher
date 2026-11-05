@@ -58,8 +58,14 @@ fun rememberSpeed(): Pair<Double?, Boolean> {
     val c = LocalContext.current.container
     val gps by c.gps.speed.collectAsStateWithLifecycle()
     val obdState by c.obd.state.collectAsStateWithLifecycle()
-    val obdData by c.obd.data.collectAsStateWithLifecycle()
-    val obd = if (obdState is EngineState.Connected) obdData[com.civiclauncher.obd.Pids.SPEED].fresh(5_000)?.value else null
+    val obdData = c.obd.data.collectAsStateWithLifecycle()
+    val connected = obdState is EngineState.Connected
+    // Solo la velocidad entera: los otros 30+ datos del OBD no deben redibujar quien la muestra.
+    val obd by remember(connected) {
+        androidx.compose.runtime.derivedStateOf {
+            if (connected) obdData.value[com.civiclauncher.obd.Pids.SPEED].fresh(5_000)?.value?.let { Math.round(it).toDouble() } else null
+        }
+    }
     return (obd ?: gps.kmh?.toDouble()) to (obd != null)
 }
 

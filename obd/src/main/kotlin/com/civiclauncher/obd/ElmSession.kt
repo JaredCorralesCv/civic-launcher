@@ -51,8 +51,51 @@ class ElmSession(private val transport: ObdTransport) {
         Detection(ElmParser.protocolName(transport.send("ATDPN")), supported)
     }
 
+    /**
+     * "Respuesta rápida": agregar al final la cantidad de respuestas esperadas ("010C1") hace que el
+     * ELM regrese en cuanto contesta la computadora, en vez de esperar por si contesta otra. Con
+     * CAN ahorra decenas de milisegundos por pregunta. Si el adaptador no lo entiende ("?"), se apaga.
+     */
+    var fastReply: Boolean = true
+        private set
+
+    /** El carro acepta preguntas de varios PIDs a la vez (hasta 6, solo en CAN). */
+    var multiPid: Boolean = false
+        private set
+
+    private suspend fun ask(command: String, timeoutMs: Long = 3_000): String {
+        if (fastReply) {
+            val r = transport.send(command + "1", timeoutMs)
+            if (ElmParser.cleanLines(r).none { it == "?" }) return r
+            fastReply = false
+        }
+        return transport.send(command, timeoutMs)
+    }
+
     suspend fun query(spec: PidSpec): ObdResult = lock.withLock {
-        ElmParser.parsePid(transport.send(spec.command), spec)
+        ElmParser.parsePid(ask(spec.command), spec)
+    }
+
+    /**
+     * Varios PIDs en una sola pregunta (máx. 6). Devuelve null si no se pudo leer así: entonces el
+     * motor vuelve a preguntar de uno en uno. Los PIDs que no vienen en la respuesta no existen.
+     */
+    suspend fun queryMany(specs: List<PidSpec>): Map<Int, Double>? = lock.withLock {
+        require(specs.size in 1..MAX_MULTI)
+        val command = "01" + specs.joinToString("") { "%02X".format(it.pid) }
+        ElmParser.parseMulti(ask(command), specs)
+    }
+
+    /**
+     * Prueba una vez si el carro contesta varios PIDs juntos (RPM + velocidad, que todos tienen).
+     * Solo en CAN: en los protocolos viejos (ISO 9141, KWP) no existe.
+     */
+    suspend fun probeMultiPid(can: Boolean): Boolean {
+        multiPid = false
+        if (!can) return false
+        val r = runCatching { queryMany(listOf(Pids.RPM, Pids.SPEED)) }.getOrNull()
+        multiPid = r != null && r.containsKey(Pids.RPM.pid) && r.containsKey(Pids.SPEED.pid)
+        return multiPid
     }
 
     suspend fun batteryVoltage(): ObdResult = lock.withLock {
@@ -87,5 +130,7 @@ class ElmSession(private val transport: ObdTransport) {
          * (tu Civic 2008 debería salir como CAN 11 bits 500 kbps).
          */
         val INIT_COMMANDS = listOf("ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATSP0")
+        /** El estándar (ISO 15765-4) permite hasta 6 PIDs por pregunta. */
+        const val MAX_MULTI = 6
     }
 }

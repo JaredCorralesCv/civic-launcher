@@ -18,6 +18,10 @@ class SimulatedElm(
     private val latencyMs: Long = 40,
     private val clockMs: () -> Long = System::currentTimeMillis,
     private val ignitionOn: () -> Boolean = { true },
+    /** Contesta varios PIDs en una sola pregunta (como un carro CAN). Falso = adaptador o carro viejo. */
+    private val multiPid: Boolean = true,
+    /** Entiende el "1" al final para responder rápido (ELM327 v1.3+). Falso = clon viejo. */
+    private val fastReply: Boolean = true,
 ) : ObdTransport {
     private val startedAt = clockMs()
     private var open = false
@@ -52,8 +56,26 @@ class SimulatedElm(
             // VIN en varias tramas, como lo manda un carro CAN real.
             "0902" -> return "014\r0:490201314847\r1:46413136353838\r2:4C303030313233"
         }
-        if (!cmd.startsWith("01") || cmd.length != 4) return "?"
-        val pid = cmd.substring(2).toIntOrNull(16) ?: return "?"
+        if (!cmd.startsWith("01")) return "?"
+        // "010C1": la cantidad de respuestas esperadas al final (número impar de cifras).
+        var body = cmd.substring(2)
+        if (body.length % 2 == 1) {
+            if (!fastReply) return "?"
+            body = body.dropLast(1)
+        }
+        val pids = body.chunked(2).map { it.toIntOrNull(16) ?: return "?" }
+        if (pids.isEmpty() || pids.size > 6) return "?"
+        if (pids.size > 1) {
+            if (!multiPid) return "NO DATA"
+            // Cada PID que exista: su número y sus datos. Los que no existen simplemente no vienen.
+            val parts = pids.mapNotNull { p -> single(p)?.removePrefix("41") }
+            return if (parts.isEmpty()) "NO DATA" else "41" + parts.joinToString("")
+        }
+        return single(pids[0]) ?: "NO DATA"
+    }
+
+    /** Respuesta a un solo PID ("410C1AF8"), o null si este "carro" no lo tiene. */
+    private fun single(pid: Int): String? {
         if (pid == 0x00 || pid == 0x20 || pid == 0x40) return "41%02X".format(pid) + supportedMask(pid)
         val s = state()
         val word = { v: Int -> listOf(v shr 8 and 0xFF, v and 0xFF) }
@@ -82,7 +104,7 @@ class SimulatedElm(
             0x45 -> listOf(pct(s.throttle * 0.9))
             0x49 -> listOf(pct(s.throttle + 15))
             0x4E -> word(2_210)
-            else -> return "NO DATA" // como un Civic real: no tiene MAF, nivel de gasolina, aceite, etc.
+            else -> return null // como un Civic real: no tiene MAF, nivel de gasolina, aceite, etc.
         }
         return "41%02X".format(pid) + data.joinToString("") { "%02X".format(it.coerceIn(0, 255)) }
     }

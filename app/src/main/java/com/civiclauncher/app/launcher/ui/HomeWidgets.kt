@@ -258,14 +258,19 @@ fun VehicleSummaryCard(modifier: Modifier, onClick: () -> Unit) {
     val c = LocalContext.current.container
     val config by c.obd.config.collectAsStateWithLifecycle()
     val obdState by c.obd.state.collectAsStateWithLifecycle()
-    val data by c.obd.data.collectAsStateWithLifecycle()
+    val dataState = c.obd.data.collectAsStateWithLifecycle()
     val live by c.obd.live.collectAsStateWithLifecycle()
     val diag by c.obd.diagnostics.collectAsStateWithLifecycle()
     val (speed, fromObd) = rememberSpeed()
     val connected = obdState is EngineState.Connected
     val hasObd = config.mode != ObdMode.NONE
-    val coolant = if (connected) data[Pids.COOLANT_TEMP].fresh()?.value else null
-    val battery = data.battery.fresh(30_000)?.value
+    // El OBD manda decenas de datos por segundo, pero esta tarjeta solo muestra tres, redondeados.
+    // derivedStateOf hace que la tarjeta se vuelva a dibujar solo cuando cambia lo que se ve.
+    val coolant by remember(connected) {
+        androidx.compose.runtime.derivedStateOf { if (connected) dataState.value[Pids.COOLANT_TEMP].fresh()?.value?.let { Math.round(it).toDouble() } else null }
+    }
+    val battery by remember { androidx.compose.runtime.derivedStateOf { dataState.value.battery.fresh(30_000)?.value?.let { Math.round(it * 10) / 10.0 } } }
+    val engineRunning by remember { androidx.compose.runtime.derivedStateOf { (dataState.value[Pids.RPM].fresh()?.value ?: 0.0) > 500 } }
     val alert = live.alerts.firstOrNull()
 
     HomeCard(modifier, onClick = onClick) {
@@ -290,7 +295,7 @@ fun VehicleSummaryCard(modifier: Modifier, onClick: () -> Unit) {
         Spacer(Modifier.weight(1f))
         Row(Modifier.fillMaxWidth()) {
             Stat("Motor", coolant?.let { "%.0f°".format(it) } ?: "--", tempColor(coolant))
-            Stat("Batería", battery?.let { "%.1f V".format(it) } ?: "--", batteryColor(battery, data[Pids.RPM].fresh()?.value))
+            Stat("Batería", battery?.let { "%.1f V".format(it) } ?: "--", batteryColor(battery, if (engineRunning) 1_000.0 else 0.0))
             Stat(
                 "Consumo",
                 // En movimiento km/L; detenido con el motor encendido, litros por hora (ralentí).

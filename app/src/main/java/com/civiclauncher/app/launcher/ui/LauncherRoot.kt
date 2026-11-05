@@ -23,6 +23,10 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.onStart
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -70,8 +74,14 @@ fun LauncherRoot(homePresses: Flow<Unit>) {
     val ctx = LocalContext.current
     val c = ctx.container
     val themeMode by c.launcherPrefs.themeMode.collectAsStateWithLifecycle()
-    val now by c.clock.now.collectAsStateWithLifecycle()
-    val hour = Calendar.getInstance().apply { timeInMillis = now }.get(Calendar.HOUR_OF_DAY)
+    // La hora cambia cada minuto, pero el tema solo dos veces al día: con derivedStateOf, el
+    // minuto nuevo ya no vuelve a dibujar toda la pantalla (antes lo hacía 1,440 veces al día).
+    val now = c.clock.now.collectAsStateWithLifecycle()
+    val nightState = remember(themeMode) {
+        androidx.compose.runtime.derivedStateOf {
+            themeMode.isNight(Calendar.getInstance().apply { timeInMillis = now.value }.get(Calendar.HOUR_OF_DAY))
+        }
+    }
     var dest by rememberSaveable { mutableStateOf(Dest.HOME) }
 
     LaunchedEffect(Unit) { homePresses.collect { dest = Dest.HOME } }
@@ -99,26 +109,31 @@ fun LauncherRoot(homePresses: Flow<Unit>) {
         return
     }
 
-    val night = themeMode.isNight(hour)
+    val night by nightState
     val wallpaper by c.wallpapers.image.collectAsStateWithLifecycle()
     val brightness by c.wallpapers.brightness.collectAsStateWithLifecycle()
+    // El velo se "hornea" una sola vez dentro de la imagen (en segundo plano): así la pantalla dibuja
+    // una capa completa menos en CADA cuadro. La Mali-450 tiene poca capacidad de relleno.
+    val backdrop by androidx.compose.runtime.produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, wallpaper, night, brightness) {
+        val img = wallpaper
+        value = if (img == null) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val veil = if (night) android.graphics.Color.argb(((0.30f + 0.45f * brightness) * 255).toInt(), 0, 0, 0)
+            else android.graphics.Color.argb(((0.15f + 0.45f * (1f - brightness)) * 255).toInt(), 255, 255, 255)
+            val bmp = img.asAndroidBitmap().copy(android.graphics.Bitmap.Config.ARGB_8888, true)
+            android.graphics.Canvas(bmp).drawColor(veil)
+            bmp.asImageBitmap()
+        }
+    }
     CivicDesignTheme(night = night, glass = wallpaper != null) {
         Box(Modifier.fillMaxSize().background((Civic.colors.opaque ?: Civic.colors).background)) {
-            wallpaper?.let { img ->
-                // Ya viene del tamaño exacto de la pantalla: se dibuja tal cual, sin escalar.
+            // Fondo con el velo ya incluido: de noche oscurece más los fondos claros; de día aclara
+            // los oscuros. Viene del tamaño exacto de la pantalla, así que se dibuja sin escalar.
+            backdrop?.let { img ->
                 androidx.compose.foundation.Image(
                     img,
                     contentDescription = null,
                     contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
-                )
-                // Velo para que el texto se lea con cualquier fondo: de noche oscurece más los fondos
-                // claros; de día aclara más los oscuros.
-                Box(
-                    Modifier.fillMaxSize().background(
-                        if (night) androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.30f + 0.45f * brightness)
-                        else androidx.compose.ui.graphics.Color.White.copy(alpha = 0.15f + 0.45f * (1f - brightness)),
-                    ),
                 )
             }
             LauncherContent(dest, night) { dest = it }
@@ -138,11 +153,15 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
     val prefs = LocalContext.current.container.launcherPrefs
     val autoHide by prefs.autoHideBar.collectAsStateWithLifecycle()
     var barVisible by remember { mutableStateOf(true) }
-    var lastTouch by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(barVisible, lastTouch, autoHide, dest) {
+    // Los toques van por un canal, no por un estado: así tocar la pantalla ya no vuelve a componer
+    // toda la pantalla (solo reinicia la cuenta regresiva).
+    val touches = remember { kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1) }
+    LaunchedEffect(barVisible, autoHide, dest) {
         if (barVisible && autoHide) {
-            delay(BAR_TIMEOUT_MS)
-            barVisible = false
+            touches.onStart { emit(Unit) }.collectLatest {
+                delay(BAR_TIMEOUT_MS)
+                barVisible = false
+            }
         }
     }
     Box(
@@ -154,7 +173,7 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
                     while (true) {
                         // Solo al apoyar el dedo: cada movimiento redibujaría la pantalla sin necesidad.
                         val e = awaitPointerEvent(PointerEventPass.Initial)
-                        if (e.type == androidx.compose.ui.input.pointer.PointerEventType.Press) lastTouch = SystemClock.uptimeMillis()
+                        if (e.type == androidx.compose.ui.input.pointer.PointerEventType.Press) touches.tryEmit(Unit)
                     }
                 }
             },
@@ -162,7 +181,9 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
         // Con la barra escondida, las tarjetas NO se estiran: conservan su tamaño y bajan a quedar
         // centradas en la pantalla (la mitad del espacio de la barra arriba y la otra mitad abajo).
         val shown = barVisible || !autoHide
-        val shift by androidx.compose.animation.core.animateDpAsState(
+        // Se guarda como State (sin "by"): el valor animado se lee solo al acomodar y al dibujar, así
+        // los 15 cuadros de la animación mueven la pantalla sin volver a componerla entera.
+        val shift = androidx.compose.animation.core.animateDpAsState(
             if (shown) 0.dp else BAR_SPACE / 2,
             androidx.compose.animation.core.tween(250),
             label = "centrar",
@@ -173,7 +194,7 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
                     .fillMaxSize()
                     .padding(bottom = BAR_SPACE)
                     // Inicio mueve solo sus tarjetas (la hora se queda arriba); las demás, la pantalla entera.
-                    .offset(y = shift)
+                    .offset { androidx.compose.ui.unit.IntOffset(0, shift.value.roundToPx()) }
                     // Inicio y Apps son dos "páginas": deslizar a la izquierda abre Apps; a la derecha, vuelve.
                     .pageSwipe(enabled = dest == Dest.HOME || dest == Dest.APPS) { toLeft ->
                         if (toLeft && dest == Dest.HOME) go(Dest.APPS)
@@ -253,7 +274,7 @@ private const val BAR_TIMEOUT_MS = 6_000L
  * Cuánto bajar el contenido para quedar centrado cuando la barra de abajo está escondida
  * (0 con la barra visible). Inicio lo usa solo en sus tarjetas, para que la hora no se mueva.
  */
-val LocalBarShift = androidx.compose.runtime.compositionLocalOf { 0.dp }
+val LocalBarShift = androidx.compose.runtime.staticCompositionLocalOf<androidx.compose.runtime.State<androidx.compose.ui.unit.Dp>> { androidx.compose.runtime.mutableStateOf(0.dp) }
 
 /** Alto que ocupa la barra de abajo: 80 dp de barra + 12 dp de margen inferior. */
 internal val BAR_SPACE = 92.dp

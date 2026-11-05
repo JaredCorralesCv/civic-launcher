@@ -67,11 +67,77 @@ class ObdEngineTest {
         e.start()
         advanceTimeBy(20_000)
         val asked = spy!!.commands
-        assertTrue(asked.count { it == "010C" } > 10, "RPM se lee seguido")
-        assertEquals(0, asked.count { it == "012F" }, "Nivel de gasolina no se pide")
+        // Las preguntas ahora van de varios PIDs juntos: se cuenta cuántas incluyen cada PID.
+        fun count(pid: Int) = asked.count { c -> c.startsWith("01") && c.length > 2 && c.substring(2).let { it.substring(0, it.length - it.length % 2) }.chunked(2).contains("%02X".format(pid)) }
+        assertTrue(count(0x0C) > 10, "RPM se lee seguido")
+        assertEquals(0, count(0x2F), "Nivel de gasolina no se pide")
         // Prioridades: RPM (rápido) se pide mucho más que la temperatura (lento).
-        assertTrue(asked.count { it == "010C" } > asked.count { it == "0105" } * 5)
+        assertTrue(count(0x0C) > count(0x05) * 5)
         e.stop()
+    }
+
+    @Test
+    fun `pide de varios PIDs a la vez y con respuesta rapida`() = runTest {
+        var spy: SpyTransport? = null
+        val clock = { testScheduler.currentTime }
+        val e = engine(factory = { SpyTransport(SimulatedElm(latencyMs = 20, clockMs = clock)).also { spy = it } })
+        e.start()
+        advanceTimeBy(10_000)
+        val asked = spy!!.commands.filter { it.startsWith("01") && it.length > 4 }
+        assertTrue(asked.any { it.length > 6 }, "Pregunta varios PIDs juntos")
+        assertTrue(asked.all { it.length % 2 == 1 }, "Todas llevan el '1' de respuesta rápida")
+        assertNotNull(e.data.value[Pids.RPM])
+        assertNotNull(e.data.value[Pids.SPEED])
+        e.stop()
+    }
+
+    @Test
+    fun `adaptador viejo sin varios PIDs ni respuesta rapida`() = runTest {
+        val clock = { testScheduler.currentTime }
+        val fast = ObdEngine({ SimulatedElm(latencyMs = 20, clockMs = clock) }, backgroundScope, clock)
+        val old = ObdEngine({ SimulatedElm(latencyMs = 20, clockMs = clock, multiPid = false, fastReply = false) }, backgroundScope, clock)
+        fast.start(); old.start()
+        advanceTimeBy(10_000)
+        // Los dos leen todo; el viejo solo más lento.
+        assertTrue(old.state.value is EngineState.Connected, "Estado: ${old.state.value}")
+        assertNotNull(old.data.value[Pids.RPM])
+        assertNotNull(old.data.value[Pids.COOLANT_TEMP])
+        val updatesFast = fast.data.value[Pids.RPM]!!.atMs
+        assertTrue(updatesFast > 0)
+        fast.stop(); old.stop()
+    }
+
+    @Test
+    fun `varios PIDs por pregunta actualiza mucho mas seguido`() = runTest {
+        val clock = { testScheduler.currentTime }
+        fun rpmReads(multi: Boolean): Int {
+            var spy: SpyTransport? = null
+            val e = ObdEngine(
+                { SpyTransport(SimulatedElm(latencyMs = 60, clockMs = clock, multiPid = multi, fastReply = multi)).also { spy = it } },
+                backgroundScope,
+                clock,
+            )
+            e.start()
+            testScheduler.advanceTimeBy(30_000)
+            e.stop()
+            return spy!!.commands.count { c -> c.startsWith("01") && c.length > 2 && c.substring(2).let { it.substring(0, it.length - it.length % 2) }.chunked(2).contains("0C") }
+        }
+        val old = rpmReads(multi = false)
+        val fast = rpmReads(multi = true)
+        println("RPM en 30 s: de uno en uno = $old, de varios a la vez = $fast")
+        assertTrue(fast >= old * 2, "Debe ser al menos el doble de rápido (uno en uno $old, varios $fast)")
+    }
+
+    @Test
+    fun `la respuesta de varios PIDs se lee completa`() {
+        val r = ElmParser.parseMulti("410C1AF80D3211\r\r>", listOf(Pids.RPM, Pids.SPEED, Pids.THROTTLE))!!
+        assertEquals(1726.0, r[Pids.RPM.pid])
+        assertEquals(50.0, r[Pids.SPEED.pid])
+        assertFalse(r.containsKey(Pids.THROTTLE.pid), "El acelerador no vino: el carro no lo tiene")
+        // En varias tramas (CAN con más de 7 bytes).
+        val multi = ElmParser.parseMulti("00A\r0:410C1AF80D32\r1:115A055A000000\r\r>", listOf(Pids.RPM, Pids.SPEED, Pids.THROTTLE, Pids.COOLANT_TEMP))!!
+        assertEquals(4, multi.size)
+        assertEquals(50.0, multi[Pids.COOLANT_TEMP.pid])
     }
 
     @Test

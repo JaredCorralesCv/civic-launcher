@@ -132,6 +132,7 @@ class ObdEngine(
             }
             _state.value = EngineState.Connected(session.adapterId, detection.protocol, detection.supported)
             isCan = detection.protocol.startsWith("CAN")
+            session.probeMultiPid(isCan)
             _diagnostics.update { it.copy(protocol = detection.protocol) }
             if (_diagnostics.value.vin == null) {
                 session.readVin()?.let { vin -> _diagnostics.update { it.copy(vin = vin) } }
@@ -166,23 +167,34 @@ class ObdEngine(
             var asked = 0
             for (group in groups) {
                 val fresh = mutableMapOf<Int, Reading>()
-                val iterator = group.iterator()
-                while (iterator.hasNext()) {
-                    val spec = iterator.next()
-                    asked++
-                    when (val r = session.query(spec)) {
-                        is ObdResult.Value -> {
-                            answered++
-                            noDataCount.remove(spec.pid)
-                            fresh[spec.pid] = Reading(r.value, clock())
-                        }
-                        ObdResult.NoData -> {
-                            val n = (noDataCount[spec.pid] ?: 0) + 1
-                            noDataCount[spec.pid] = n
-                            if (n >= 3 && group !== fast) iterator.remove()
-                        }
-                        is ObdResult.Error -> Unit
+                val missing = mutableListOf<PidSpec>()
+                fun answer(spec: PidSpec, value: Double) {
+                    answered++
+                    noDataCount.remove(spec.pid)
+                    fresh[spec.pid] = Reading(value, clock())
+                }
+                // Con CAN: de 6 en 6 en una sola pregunta (mucho menos ida y vuelta por Bluetooth).
+                val batches = if (session.multiPid) group.chunked(ElmSession.MAX_MULTI) else group.map { listOf(it) }
+                for (batch in batches) {
+                    asked += batch.size
+                    val many = if (batch.size > 1) session.queryMany(batch) else null
+                    if (many != null) {
+                        batch.forEach { spec -> many[spec.pid]?.let { answer(spec, it) } ?: missing.add(spec) }
+                        continue
                     }
+                    for (spec in batch) {
+                        when (val r = session.query(spec)) {
+                            is ObdResult.Value -> answer(spec, r.value)
+                            ObdResult.NoData -> missing.add(spec)
+                            is ObdResult.Error -> Unit
+                        }
+                    }
+                }
+                // Lo que el carro no contestó 3 veces seguidas se deja de preguntar (salvo los rápidos).
+                for (spec in missing) {
+                    val n = (noDataCount[spec.pid] ?: 0) + 1
+                    noDataCount[spec.pid] = n
+                    if (n >= 3 && group !== fast) group.remove(spec)
                 }
                 if (fresh.isNotEmpty()) _data.update { it.copy(values = it.values + fresh) }
             }
