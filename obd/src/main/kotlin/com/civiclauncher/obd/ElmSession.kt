@@ -59,6 +59,25 @@ class ElmSession(private val transport: ObdTransport) {
         ElmParser.parseVoltage(transport.send("ATRV"))
     }
 
+    /** Códigos de falla: modo 03 guardados, 07 pendientes, 0A permanentes. null = no se pudo leer. */
+    suspend fun readDtcs(mode: Int, can: Boolean): List<String>? = lock.withLock {
+        ElmParser.parseDtcs(transport.send("%02X".format(mode), timeoutMs = 5_000), mode + 0x40, can)
+    }
+
+    /**
+     * Borra los códigos y apaga el foco "Check Engine" (modo 04). También borra los monitores de
+     * emisiones: el carro tarda unos días de manejo en volver a revisarlos. Solo con motor apagado y
+     * llave en ON es lo recomendado. Devuelve true si el carro confirmó (respuesta 44).
+     */
+    suspend fun clearDtcs(): Boolean = lock.withLock {
+        ElmParser.cleanLines(transport.send("04", timeoutMs = 5_000)).any { it.replace(" ", "").startsWith("44") }
+    }
+
+    /** Número de serie del carro (VIN). null si el carro no lo da (algunos modelos viejos). */
+    suspend fun readVin(): String? = lock.withLock {
+        ElmParser.parseVin(transport.send("0902", timeoutMs = 5_000))
+    }
+
     suspend fun stop() = lock.withLock { transport.close() }
 
     companion object {

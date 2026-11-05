@@ -43,29 +43,52 @@ class SimulatedElm(
         if (cmd == "ATRV") return "%.1fV".format(Locale.US, if (on && state().rpm > 0) 14.1 else 12.4)
         if (cmd == "ATDPN") return "A6"
         if (cmd.startsWith("AT")) return "OK"
+        if (!on && (cmd.startsWith("0") )) return "SEARCHING...\rUNABLE TO CONNECT"
+        when (cmd) {
+            // Códigos de falla guardados (CAN: 43 + cantidad + pares). Un sensor de oxígeno lento.
+            "03" -> return if (codes.isEmpty()) "4300" else "43%02X".format(codes.size) + codes.joinToString("")
+            "07" -> return "4700"
+            "04" -> { codes.clear(); return "44" }
+            // VIN en varias tramas, como lo manda un carro CAN real.
+            "0902" -> return "014\r0:490201314847\r1:46413136353838\r2:4C303030313233"
+        }
         if (!cmd.startsWith("01") || cmd.length != 4) return "?"
-        if (!on) return "SEARCHING...\rUNABLE TO CONNECT"
         val pid = cmd.substring(2).toIntOrNull(16) ?: return "?"
         if (pid == 0x00 || pid == 0x20 || pid == 0x40) return "41%02X".format(pid) + supportedMask(pid)
         val s = state()
+        val word = { v: Int -> listOf(v shr 8 and 0xFF, v and 0xFF) }
         val data: List<Int> = when (pid) {
+            // Foco apagado, 1 código guardado (no enciende el foco, como pasa con un P0133).
+            0x01 -> listOf(codes.size and 0x7F, 0x07, 0xE5, 0x00)
+            0x03 -> listOf(if (s.coolant < 60) 1 else if (s.throttle < 1 && s.speed > 20) 4 else 2, 0)
             0x04 -> listOf(pct(s.load))
             0x05 -> listOf((s.coolant + 40).roundToInt())
             0x06 -> listOf(128 + 3)
             0x07 -> listOf(128 - 2)
-            0x0B -> listOf((30 + s.load * 0.7).roundToInt())
-            0x0C -> (s.rpm * 4).roundToInt().let { listOf(it shr 8, it and 0xFF) }
+            0x0B -> listOf(s.map.roundToInt())
+            0x0C -> word((s.rpm * 4).roundToInt())
             0x0D -> listOf(s.speed.roundToInt())
             0x0E -> listOf(((12 + 64) * 2))
             0x0F -> listOf(30 + 40)
-            0x10 -> (s.rpm / 300 * 100).roundToInt().let { listOf(it shr 8, it and 0xFF) }
             0x11 -> listOf(pct(s.throttle))
+            0x14 -> listOf((0.45 + 0.4 * sin(clockMs() / 300.0)).times(200).roundToInt(), 0xFF)
+            0x15 -> listOf((0.70 * 200).roundToInt(), 0xFF)
+            0x1F -> word(((clockMs() - startedAt) / 1000).toInt())
+            0x21 -> word(0)
+            0x2E -> listOf(pct(if (s.coolant > 70) 18.0 else 0.0))
+            0x31 -> word(1_284)
             0x33 -> listOf(101)
-            0x42 -> 14100.let { listOf(it shr 8, it and 0xFF) }
-            else -> return "NO DATA" // como un Civic real: no todos los PIDs existen (p. ej. nivel de gasolina)
+            0x42 -> word(14_100)
+            0x45 -> listOf(pct(s.throttle * 0.9))
+            0x49 -> listOf(pct(s.throttle + 15))
+            0x4E -> word(2_210)
+            else -> return "NO DATA" // como un Civic real: no tiene MAF, nivel de gasolina, aceite, etc.
         }
         return "41%02X".format(pid) + data.joinToString("") { "%02X".format(it.coerceIn(0, 255)) }
     }
+
+    /** Códigos guardados: un P0133 (sensor de oxígeno lento). Se borra con el modo 04. */
+    private val codes = mutableListOf("0133")
 
     /** Bits de "PIDs soportados" a partir de la lista que este simulador sabe contestar. */
     private fun supportedMask(base: Int): String {
@@ -80,7 +103,10 @@ class SimulatedElm(
 
     private fun pct(v: Double) = (v * 255 / 100).roundToInt()
 
-    data class State(val speed: Double, val rpm: Double, val throttle: Double, val load: Double, val coolant: Double)
+    data class State(val speed: Double, val rpm: Double, val throttle: Double, val load: Double, val coolant: Double) {
+        /** Presión del múltiple: ~30 kPa en ralentí, sube con el acelerador (motor atmosférico). */
+        val map: Double get() = 28 + throttle * 0.9
+    }
 
     /** Ciclo de 60 s: 0–40 s manejando (ondas suaves), 40–60 s detenido en el semáforo. */
     fun state(): State {
@@ -102,6 +128,10 @@ class SimulatedElm(
     }
 
     private companion object {
-        val IMPLEMENTED = listOf(0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x33, 0x42)
+        /** Lo que tendría un Civic 2008 (sin MAF: usa sensor MAP). */
+        val IMPLEMENTED = listOf(
+            0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x11, 0x14, 0x15, 0x1F,
+            0x21, 0x2E, 0x31, 0x33, 0x42, 0x45, 0x49, 0x4E,
+        )
     }
 }

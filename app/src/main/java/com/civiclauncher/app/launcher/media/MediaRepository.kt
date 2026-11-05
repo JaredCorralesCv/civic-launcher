@@ -253,6 +253,8 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         delays.forEachIndexed { i, d ->
             handler.postAtTime({
                 if (lastBtState == PlaybackState.STATE_PLAYING) return@postAtTime
+                // Si estás escuchando la radio (o la acabas de elegir), conectar el celular no la quita.
+                if (SystemClock.elapsedRealtime() < yieldUntil || SysProp.get("sys.sourcing.package") == VendorApps.RADIO) return@postAtTime
                 val ok = resumeBluetooth()
                 android.util.Log.i(TAG, "celular conectado: intento ${i + 1}, pedido=$ok")
             }, AUTOPLAY, start + d)

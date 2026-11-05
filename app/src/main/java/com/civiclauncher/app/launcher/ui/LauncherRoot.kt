@@ -152,8 +152,9 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
             .pointerInput(Unit) {
                 awaitPointerEventScope {
                     while (true) {
-                        awaitPointerEvent(PointerEventPass.Initial)
-                        lastTouch = SystemClock.uptimeMillis()
+                        // Solo al apoyar el dedo: cada movimiento redibujaría la pantalla sin necesidad.
+                        val e = awaitPointerEvent(PointerEventPass.Initial)
+                        if (e.type == androidx.compose.ui.input.pointer.PointerEventType.Press) lastTouch = SystemClock.uptimeMillis()
                     }
                 }
             },

@@ -93,6 +93,79 @@ object ElmParser {
         }
     }
 
+    // ------------------------------------------------------------------ Respuestas largas (CAN)
+
+    /**
+     * Junta los bytes de datos de una respuesta que puede venir en varias líneas.
+     *
+     * Con encabezados apagados (ATH0) y CAN, una respuesta larga (ISO-TP) se ve así:
+     * ```
+     * 014            ← largo total en hex (opcional)
+     * 0:490201314847 ← trama 0
+     * 1:434D...      ← trama 1
+     * ```
+     * Una corta viene en una sola línea. Devuelve los bytes desde el byte de respuesta del modo
+     * ([responseMode], p. ej. 0x43) en adelante, o null si no se encontró.
+     */
+    fun payload(raw: String, responseMode: Int): IntArray? {
+        val lines = cleanLines(raw)
+        if (lines.isEmpty() || lines.any { it == "NO DATA" }) return null
+        if (ERRORS.any { e -> lines.any { it.startsWith(e) } }) return null
+        val multi = lines.any { FRAME.matches(it) }
+        val hex = if (multi) {
+            lines.filter { FRAME.matches(it) }
+                .sortedBy { it.substringBefore(':').trim().toInt(16) }
+                .joinToString("") { it.substringAfter(':').replace(" ", "") }
+        } else {
+            lines.joinToString("") { it.replace(" ", "") }
+        }
+        val start = hex.indexOf("%02X".format(responseMode))
+        if (start < 0 || start % 2 != 0) return null
+        val body = hex.substring(start)
+        return IntArray(body.length / 2) { i -> body.substring(i * 2, i * 2 + 2).toIntOrNull(16) ?: return null }
+    }
+
+    private val FRAME = Regex("^[0-9A-F]{1,2}:.*")
+
+    /**
+     * Códigos de falla del modo 03 (guardados), 07 (pendientes) o 0A (permanentes).
+     * En CAN el primer byte después del modo es la cantidad de códigos; en los protocolos viejos no
+     * hay cantidad y vienen de 3 en 3 rellenos con ceros. [can] dice cuál es.
+     * Devuelve null si no se pudo leer; lista vacía = sin códigos.
+     */
+    fun parseDtcs(raw: String, responseMode: Int, can: Boolean): List<String>? {
+        if (cleanLines(raw).any { it == "NO DATA" }) return emptyList()
+        val bytes = payload(raw, responseMode) ?: return null
+        val pairs = if (can) {
+            val count = bytes.getOrNull(1) ?: return emptyList()
+            (0 until count).mapNotNull { i ->
+                val a = bytes.getOrNull(2 + i * 2) ?: return@mapNotNull null
+                val b = bytes.getOrNull(3 + i * 2) ?: return@mapNotNull null
+                a to b
+            }
+        } else {
+            (1 until bytes.size - 1 step 2).map { bytes[it] to bytes[it + 1] }
+        }
+        return pairs.filter { (a, b) -> a != 0 || b != 0 }.map { (a, b) -> dtcName(a, b) }.distinct()
+    }
+
+    /** Dos bytes → "P0420". Los 2 bits altos dicen el sistema (P motor, C chasis, B carrocería, U red). */
+    fun dtcName(a: Int, b: Int): String {
+        val letter = "PCBU"[(a shr 6) and 0x3]
+        val first = (a shr 4) and 0x3
+        return "%c%d%X%02X".format(letter, first, a and 0xF, b)
+    }
+
+    /** Número de serie del carro (VIN) del modo 09 PID 02: 17 letras y números. */
+    fun parseVin(raw: String): String? {
+        val bytes = payload(raw, 0x49) ?: return null
+        // 49 02 [01] luego 17 caracteres ASCII. Algunos carros no mandan el byte de cantidad.
+        if (bytes.size < 3 || bytes[1] != 0x02) return null
+        val text = bytes.drop(2).filter { it in 0x20..0x7E }.map { it.toChar() }.joinToString("")
+        val vin = text.filter { it.isLetterOrDigit() }.takeLast(17)
+        return vin.takeIf { it.length == 17 }
+    }
+
     /** Respuesta de ATRV, por ejemplo "12.6V". Es el voltaje en el conector OBD (la batería). */
     fun parseVoltage(raw: String): ObdResult {
         val line = cleanLines(raw).firstOrNull() ?: return ObdResult.Error("Respuesta vacía", raw)

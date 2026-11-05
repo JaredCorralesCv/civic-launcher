@@ -68,6 +68,15 @@ class ObdEngine(
     private val _data = MutableStateFlow(VehicleData())
     val data: StateFlow<VehicleData> = _data.asStateFlow()
 
+    private val _diagnostics = MutableStateFlow(Diagnostics())
+    /** VIN, foco Check Engine y códigos de falla. Se lee al conectar y cada 2 minutos. */
+    val diagnostics: StateFlow<Diagnostics> = _diagnostics.asStateFlow()
+
+    /** La sesión activa (para borrar códigos a pedido). El candado de la sesión evita choques con el ciclo. */
+    @Volatile private var session: ElmSession? = null
+    @Volatile private var isCan = true
+    @Volatile private var refreshDtcsRequested = false
+
     private var job: Job? = null
 
     val isRunning: Boolean get() = job?.isActive == true
@@ -92,6 +101,7 @@ class ObdEngine(
                 val session = ElmSession(transport)
                 session.start()
                 attempt = 0
+                this.session = session
                 connectedLoop(session)
             } catch (e: CancellationException) {
                 throw e
@@ -101,6 +111,7 @@ class ObdEngine(
                 _state.value = EngineState.Reconnecting(e.message ?: e.javaClass.simpleName, wait, attempt)
                 delay(wait)
             } finally {
+                session = null
                 // NonCancellable: al detener el motor hay que soltar el Bluetooth aunque nos cancelen.
                 withContext(NonCancellable) { runCatching { transport.close() } }
             }
@@ -120,6 +131,12 @@ class ObdEngine(
                 continue
             }
             _state.value = EngineState.Connected(session.adapterId, detection.protocol, detection.supported)
+            isCan = detection.protocol.startsWith("CAN")
+            _diagnostics.update { it.copy(protocol = detection.protocol) }
+            if (_diagnostics.value.vin == null) {
+                session.readVin()?.let { vin -> _diagnostics.update { it.copy(vin = vin) } }
+            }
+            refreshDtcs(session)
             poll(session, detection.supported)
             // poll() regresa cuando el carro deja de contestar.
             _state.value = EngineState.CarOff(session.adapterId)
@@ -131,6 +148,8 @@ class ObdEngine(
         val fast = usable(FAST)
         val medium = usable(MEDIUM)
         val slow = usable(SLOW)
+        val rare = usable(RARE)
+        var lastDtcCheck = clock()
         val noDataCount = mutableMapOf<Int, Int>()
         var silentCycles = 0
         var cycle = 0L
@@ -141,6 +160,7 @@ class ObdEngine(
                 add(fast)
                 if (cycle % 3 == 0L) add(medium)
                 if (cycle % 10 == 0L) add(slow)
+                if (cycle % 60 == 0L) add(rare)
             }
             var answered = 0
             var asked = 0
@@ -168,6 +188,13 @@ class ObdEngine(
             }
             if (cycle % 10 == 0L) readBattery(session)
 
+            // Códigos de falla: cada 2 minutos, o enseguida si cambió el foco / la cantidad (PID 01).
+            if (refreshDtcsRequested || clock() - lastDtcCheck > DTC_REFRESH_MS || monitorChanged()) {
+                refreshDtcsRequested = false
+                lastDtcCheck = clock()
+                refreshDtcs(session)
+            }
+
             // Si nada contestó varias vueltas seguidas, el carro se apagó (el adaptador sigue vivo).
             silentCycles = if (asked > 0 && answered == 0) silentCycles + 1 else 0
             if (silentCycles >= config.silentCyclesForCarOff) return
@@ -178,6 +205,54 @@ class ObdEngine(
         }
     }
 
+    private var lastMonitor: Int? = null
+
+    /** Actualiza foco/cantidad desde el PID 01 y dice si cambió desde la última vez. */
+    private fun monitorChanged(): Boolean {
+        val raw = _data.value[Pids.MONITOR_STATUS]?.value?.toInt() ?: return false
+        val mil = raw and 0x80 != 0
+        val count = raw and 0x7F
+        _diagnostics.update { it.copy(milOn = mil, dtcCount = count) }
+        val changed = lastMonitor != null && lastMonitor != raw
+        lastMonitor = raw
+        return changed
+    }
+
+    private suspend fun refreshDtcs(session: ElmSession) {
+        val stored = session.readDtcs(0x03, isCan)
+        val pending = session.readDtcs(0x07, isCan)
+        _diagnostics.update {
+            it.copy(
+                stored = stored ?: it.stored,
+                pending = pending ?: it.pending,
+                checkedAtMs = clock(),
+            )
+        }
+    }
+
+    /**
+     * Borra los códigos de falla y apaga el foco (modo 04). Solo funciona conectado al carro.
+     * Devuelve true si el carro lo confirmó. Después se vuelven a leer los códigos.
+     */
+    suspend fun clearCodes(): Boolean {
+        val s = session ?: return false
+        if (_state.value !is EngineState.Connected) return false
+        val ok = runCatching { s.clearDtcs() }.getOrDefault(false)
+        if (ok) {
+            _diagnostics.update { it.copy(stored = emptyList(), pending = emptyList(), milOn = false, dtcCount = 0, lastClear = ClearResult.OK) }
+            lastMonitor = null
+        } else {
+            _diagnostics.update { it.copy(lastClear = ClearResult.FAILED) }
+        }
+        refreshDtcsRequested = true
+        return ok
+    }
+
+    /** Volver a leer los códigos en la siguiente vuelta del ciclo (botón "Revisar de nuevo"). */
+    fun requestDtcRefresh() {
+        refreshDtcsRequested = true
+    }
+
     private suspend fun readBattery(session: ElmSession) {
         (session.batteryVoltage() as? ObdResult.Value)?.let { v ->
             _data.update { it.copy(battery = Reading(v.value, clock())) }
@@ -185,8 +260,21 @@ class ObdEngine(
     }
 
     companion object {
-        val FAST = listOf(Pids.RPM, Pids.SPEED, Pids.THROTTLE, Pids.ENGINE_LOAD)
-        val MEDIUM = listOf(Pids.INTAKE_MAP, Pids.MAF, Pids.TIMING_ADVANCE, Pids.SHORT_FUEL_TRIM_1, Pids.LONG_FUEL_TRIM_1)
-        val SLOW = listOf(Pids.COOLANT_TEMP, Pids.INTAKE_AIR_TEMP, Pids.MODULE_VOLTAGE, Pids.BAROMETRIC, Pids.AMBIENT_TEMP, Pids.FUEL_LEVEL)
+        /** Cada vuelta: lo que se ve moverse y lo que necesita el cálculo de consumo. */
+        val FAST = listOf(Pids.RPM, Pids.SPEED, Pids.THROTTLE, Pids.ENGINE_LOAD, Pids.INTAKE_MAP, Pids.MAF)
+        /** Cada 3 vueltas. */
+        val MEDIUM = listOf(
+            Pids.TIMING_ADVANCE, Pids.SHORT_FUEL_TRIM_1, Pids.LONG_FUEL_TRIM_1, Pids.FUEL_RATE, Pids.REL_THROTTLE,
+            Pids.PEDAL_D, Pids.COMMANDED_THROTTLE, Pids.ABS_LOAD, Pids.O2_B1S1, Pids.O2_B1S2, Pids.COMMANDED_AFR,
+        )
+        /** Cada 10 vueltas: temperaturas, voltajes, estado. */
+        val SLOW = listOf(
+            Pids.COOLANT_TEMP, Pids.INTAKE_AIR_TEMP, Pids.MODULE_VOLTAGE, Pids.BAROMETRIC, Pids.AMBIENT_TEMP,
+            Pids.FUEL_LEVEL, Pids.OIL_TEMP, Pids.CATALYST_TEMP, Pids.MONITOR_STATUS, Pids.FUEL_SYSTEM,
+            Pids.EVAP_PURGE, Pids.FUEL_PRESSURE,
+        )
+        /** Cada 60 vueltas: contadores que cambian muy poco. */
+        val RARE = listOf(Pids.RUN_TIME, Pids.DIST_WITH_MIL, Pids.DIST_SINCE_CLEAR, Pids.TIME_WITH_MIL, Pids.TIME_SINCE_CLEAR, Pids.ODOMETER)
+        private const val DTC_REFRESH_MS = 120_000L
     }
 }

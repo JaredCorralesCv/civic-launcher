@@ -227,15 +227,21 @@ private fun SpeedCard(modifier: Modifier, onClick: () -> Unit) {
 @Composable
 private fun EngineCard(modifier: Modifier, onClick: () -> Unit) {
     val c = LocalContext.current.container
+    val config by c.obd.config.collectAsStateWithLifecycle()
     val obdState by c.obd.state.collectAsStateWithLifecycle()
     val obdData by c.obd.data.collectAsStateWithLifecycle()
+    val live by c.obd.live.collectAsStateWithLifecycle()
     val connected = obdState is EngineState.Connected
     val coolant = if (connected) obdData[Pids.COOLANT_TEMP].fresh()?.value else null
     val battery = obdData.battery.fresh(30_000)?.value
+    val alert = live.alerts.firstOrNull()
+    // La raya de color dice el estado de un vistazo: rojo peligro, ámbar aviso, verde todo bien.
     val tone = when {
-        (coolant ?: 0.0) >= 105 || (battery != null && battery < 11.8) -> Civic.colors.bad
-        (coolant ?: 0.0) >= 100 || (battery != null && battery < 12.2) -> Civic.colors.warn
-        else -> Civic.colors.warn.copy(alpha = 0.9f)
+        config.mode == ObdMode.NONE -> Civic.colors.textFaint
+        alert?.level == com.civiclauncher.obd.AlertLevel.DANGER -> Civic.colors.bad
+        alert != null -> Civic.colors.warn
+        connected -> Civic.colors.ok
+        else -> Civic.colors.textFaint
     }
     HomeCard(modifier, onClick = onClick) {
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
@@ -244,17 +250,35 @@ private fun EngineCard(modifier: Modifier, onClick: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text("MOTOR", style = Civic.type.caption.copy(letterSpacing = 0.10.em), color = Civic.colors.textDim)
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    "${coolant?.let { "%.0f °C".format(it) } ?: "-- °C"}   ·   ${battery?.let { "%.1f V".format(it) } ?: "-- V"}",
-                    style = Civic.type.title.copy(fontSize = 22.sp, fontFeatureSettings = "tnum"),
-                    color = Civic.colors.text,
-                    maxLines = 1,
-                )
+                when {
+                    config.mode == ObdMode.NONE -> {
+                        Text("Sin adaptador OBD", style = Civic.type.title.copy(fontSize = 20.sp), color = Civic.colors.text, maxLines = 1)
+                        Text("Toca para conectarlo", style = Civic.type.caption, color = Civic.colors.textDim)
+                    }
+                    alert != null -> {
+                        Text(alert.title, style = Civic.type.title.copy(fontSize = 20.sp), color = Civic.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(alert.detail, style = Civic.type.caption, color = Civic.colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    else -> {
+                        Text(
+                            "${coolant?.let { "%.0f °C".format(it) } ?: "-- °C"}   ·   ${battery?.let { "%.1f V".format(it) } ?: "-- V"}",
+                            style = Civic.type.title.copy(fontSize = 22.sp, fontFeatureSettings = "tnum"),
+                            color = Civic.colors.text,
+                            maxLines = 1,
+                        )
+                        Text(
+                            live.kmPerLiter?.let { if (it >= 99) "Sin gastar gasolina" else "%.1f km/L al instante".format(it) }
+                                ?: if (connected) "Sin fallas" else obdStatus(obdState, config).first,
+                            style = Civic.type.caption,
+                            color = Civic.colors.textDim,
+                            maxLines = 1,
+                        )
+                    }
+                }
             }
         }
     }
 }
-
 // ------------------------------------------------------------------ Barra superior
 
 @Composable

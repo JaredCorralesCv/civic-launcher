@@ -5,7 +5,17 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import androidx.core.content.ContextCompat
+import com.civiclauncher.obd.Diagnostics
 import com.civiclauncher.obd.EngineState
+import com.civiclauncher.obd.FuelModel
+import com.civiclauncher.obd.GearEstimator
+import com.civiclauncher.obd.Pids
+import com.civiclauncher.obd.TripComputer
+import com.civiclauncher.obd.TripStats
+import com.civiclauncher.obd.VehicleAlert
+import com.civiclauncher.obd.VehicleAlerts
+import com.civiclauncher.obd.freshAt
+import kotlinx.coroutines.launch
 import com.civiclauncher.obd.ObdEngine
 import com.civiclauncher.obd.ObdTransport
 import com.civiclauncher.obd.SimulatedElm
@@ -21,6 +31,16 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 
 enum class ObdMode { NONE, SIMULATOR, BLUETOOTH }
+
+/** Calculado al momento a partir de los datos del OBD. */
+data class LiveDerived(
+    val kmPerLiter: Double? = null,
+    val litersPerHour: Double? = null,
+    val gear: Int? = null,
+    val alerts: List<VehicleAlert> = emptyList(),
+)
+
+private const val NEW_TRIP_AFTER_MS = 30 * 60_000L
 
 data class ObdConfig(val mode: ObdMode, val address: String? = null, val name: String? = null)
 
@@ -52,6 +72,82 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
         .flatMapLatest { it?.data ?: flowOf(VehicleData()) }
         .stateIn(scope, SharingStarted.Eagerly, VehicleData())
 
+    /** VIN, foco Check Engine y códigos de falla. Se conserva aunque el motor se detenga. */
+    val diagnostics: StateFlow<Diagnostics> = engine
+        .flatMapLatest { it?.diagnostics ?: flowOf(Diagnostics()) }
+        .stateIn(scope, SharingStarted.Eagerly, Diagnostics())
+
+    // ------------------------------------------------------------------ Viaje y cálculos
+
+    private val tripPrefs = context.getSharedPreferences("trip", Context.MODE_PRIVATE)
+    private val trip = TripComputer(loadTrip())
+    private val _tripStats = MutableStateFlow(trip.stats)
+    /** Computadora de viaje. Se guarda cada tanto: sobrevive al apagado del carro. */
+    val tripStats: StateFlow<TripStats> = _tripStats.asStateFlow()
+
+    private val _live = MutableStateFlow(LiveDerived())
+    /** Lo calculado al momento: consumo, marcha y avisos. */
+    val live: StateFlow<LiveDerived> = _live.asStateFlow()
+    private var lastSaveMs = 0L
+    private var lastRunningMs = tripPrefs.getLong("last_running", 0L)
+
+    private fun loadTrip() = TripStats(
+        startedAtMs = tripPrefs.getLong("started", 0L),
+        drivingMs = tripPrefs.getLong("driving", 0L),
+        distanceKm = tripPrefs.getFloat("km", 0f).toDouble(),
+        fuelLiters = tripPrefs.getFloat("liters", 0f).toDouble(),
+        maxSpeedKmh = tripPrefs.getFloat("max", 0f).toDouble(),
+        idleMs = tripPrefs.getLong("idle", 0L),
+    )
+
+    private fun saveTrip(s: TripStats) {
+        tripPrefs.edit()
+            .putLong("started", s.startedAtMs).putLong("driving", s.drivingMs)
+            .putFloat("km", s.distanceKm.toFloat()).putFloat("liters", s.fuelLiters.toFloat())
+            .putFloat("max", s.maxSpeedKmh.toFloat()).putLong("idle", s.idleMs)
+            .putLong("last_running", lastRunningMs)
+            .apply()
+    }
+
+    private fun onData(d: VehicleData) {
+        val now = System.currentTimeMillis()
+        val running = (d[Pids.RPM].freshAt(now)?.value ?: 0.0) > 300
+        if (running) {
+            // Más de 30 min con el motor apagado = viaje nuevo (como la computadora de muchos carros).
+            if (lastRunningMs != 0L && now - lastRunningMs > NEW_TRIP_AFTER_MS) trip.reset()
+            lastRunningMs = now
+        }
+        val s = trip.update(d, now)
+        _tripStats.value = s
+        if (now - lastSaveMs > 15_000) {
+            lastSaveMs = now
+            saveTrip(s)
+        }
+        _live.value = LiveDerived(
+            kmPerLiter = FuelModel.kmPerLiter(d, now),
+            litersPerHour = FuelModel.litersPerHour(d, now),
+            gear = GearEstimator.estimate(d[Pids.RPM].freshAt(now)?.value, d[Pids.SPEED].freshAt(now)?.value),
+            alerts = VehicleAlerts.evaluate(d, diagnostics.value, now),
+        )
+    }
+
+    /** Empezar un viaje nuevo (botón "Reiniciar"). */
+    fun resetTrip() {
+        trip.reset()
+        _tripStats.value = trip.stats
+        saveTrip(trip.stats)
+    }
+
+    /**
+     * Borra los códigos de falla. Devuelve false si no hay conexión con el carro o si el carro no
+     * lo aceptó. Lo ideal: con la llave en ON y el motor apagado.
+     */
+    suspend fun clearCodes(): Boolean = engine.value?.clearCodes() ?: false
+
+    fun refreshCodes() {
+        engine.value?.requestDtcRefresh()
+    }
+
     init {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context, intent: Intent) {
@@ -64,6 +160,7 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
             addAction(Intent.ACTION_SCREEN_OFF)
         }
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+        scope.launch { data.collect { onData(it) } }
     }
 
     private fun loadConfig(): ObdConfig {
