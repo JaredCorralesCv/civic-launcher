@@ -19,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -199,23 +200,24 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
                         if (!toLeft && dest == Dest.APPS) go(Dest.HOME)
                     },
             ) {
-                androidx.compose.animation.AnimatedContent(
-                    targetState = dest,
-                    transitionSpec = {
-                        val pages = setOf(Dest.HOME, Dest.APPS)
-                        if (initialState in pages && targetState in pages) {
-                            // Como pasar de página: Apps entra por la derecha.
-                            val forward = targetState == Dest.APPS
-                            (androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(260)) { w -> if (forward) w else -w } togetherWith
-                                androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(260)) { w -> if (forward) -w else w })
-                        } else {
-                            // El resto cambia al instante (cada animación cuesta en la Mali-450).
-                            androidx.compose.animation.EnterTransition.None togetherWith androidx.compose.animation.ExitTransition.None
+                // Medido en tu pantalla: cada vez que salías de Inicio, el mapa se destruía y al volver se
+                // volvía a abrir y a dibujar entero (decenas de mosaicos subidos a la GPU, tirones de
+                // 150 ms). Ahora Inicio vive siempre: solo deja de dibujarse mientras ves otra pantalla.
+                androidx.compose.runtime.CompositionLocalProvider(LocalBarShift provides shift) {
+                    Box(Modifier.fillMaxSize().visibleOnly(dest == Dest.HOME)) {
+                        androidx.compose.runtime.CompositionLocalProvider(LocalScreenActive provides (dest == Dest.HOME)) {
+                            HomeScreen(onOpen = go)
                         }
-                    },
-                    label = "pantalla",
-                ) { target ->
-                    androidx.compose.runtime.CompositionLocalProvider(LocalBarShift provides shift) { Screen(target, night, go) }
+                    }
+                    // Apps también vive siempre: armar la cuadrícula con todos los íconos tardaba ~300 ms
+                    // cada vez que deslizabas desde Inicio. Se crea la primera vez que la abres.
+                    var appsCreated by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+                    if (dest == Dest.APPS) appsCreated = true
+                    if (appsCreated) {
+                        Box(Modifier.fillMaxSize().visibleOnly(dest == Dest.APPS)) { AppsScreen() }
+                    }
+                    // Las demás pantallas cambian al instante: deslizarlas costaba más de lo que lucía.
+                    if (dest != Dest.HOME && dest != Dest.APPS) Screen(dest, night, go)
                 }
                 if (dest == Dest.HOME || dest == Dest.APPS) {
                     // En Inicio el contenedor no se mueve (la hora se queda arriba): los puntitos bajan con las tarjetas.
@@ -269,6 +271,21 @@ private fun BarHandle(modifier: Modifier, onOpen: () -> Unit) {
 }
 
 private const val BAR_TIMEOUT_MS = 6_000L
+
+/**
+ * ¿La pantalla que contiene esto se está viendo? Inicio sigue compuesto aunque no se vea; con esto
+ * el mapa deja de seguir al GPS y de dibujarse mientras tanto.
+ */
+val LocalScreenActive = androidx.compose.runtime.staticCompositionLocalOf { true }
+
+/**
+ * Sigue compuesto (conserva su estado: el mapa abierto, los mosaicos ya dibujados) pero, si no está
+ * activo, no se coloca: no se dibuja ni recibe toques.
+ */
+private fun Modifier.visibleOnly(active: Boolean): Modifier = this.layout { measurable, constraints ->
+    val p = measurable.measure(constraints)
+    layout(p.width, p.height) { if (active) p.place(0, 0) }
+}
 
 /**
  * Cuánto bajar el contenido para quedar centrado cuando la barra de abajo está escondida
@@ -329,12 +346,12 @@ private fun Modifier.pageSwipe(enabled: Boolean, onSwipe: (toLeft: Boolean) -> U
 @Composable
 private fun Screen(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
     when (dest) {
-        Dest.HOME -> HomeScreen(onOpen = go)
+        Dest.HOME -> Unit // Inicio vive aparte (ver LauncherContent)
         Dest.VEHICLE -> VehicleScreen()
         Dest.MAP -> com.civiclauncher.app.launcher.map.MapScreen(night = night)
         Dest.MUSIC -> MusicScreen(onOpen = go)
         Dest.RADIO -> RadioScreen(onOpen = go)
-        Dest.APPS -> AppsScreen()
+        Dest.APPS -> Unit // vive aparte (ver LauncherContent)
         Dest.SETTINGS -> SettingsScreen(
             onOpenDiagnostics = { go(Dest.DIAG) },
             onOpenCleanup = { go(Dest.CLEANUP) },

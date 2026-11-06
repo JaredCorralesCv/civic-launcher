@@ -172,12 +172,14 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
                 when (opt) {
                     is com.civiclauncher.app.launcher.AppOptimizer.Status.Done -> "Optimizado para esta pantalla"
                     com.civiclauncher.app.launcher.AppOptimizer.Status.Running -> "Optimizando… (hasta 2 min)"
-                    is com.civiclauncher.app.launcher.AppOptimizer.Status.Failed -> "No se pudo optimizar"
+                    is com.civiclauncher.app.launcher.AppOptimizer.Status.Failed -> "Se optimiza solo en unas horas"
                     com.civiclauncher.app.launcher.AppOptimizer.Status.Idle -> "Optimizar para esta pantalla"
                 },
                 when (val s = opt) {
                     is com.civiclauncher.app.launcher.AppOptimizer.Status.Done -> "Civic está compilado a código nativo. Se nota al reiniciar Civic. Toca para repetirlo."
-                    is com.civiclauncher.app.launcher.AppOptimizer.Status.Failed -> "Sin permiso de root (${s.reason}). Se puede hacer por la PC. Toca para reintentar."
+                    // Medido en tu pantalla: su no da root a nadie, pero Android sí optimiza Civic solo en
+                    // su mantenimiento de fondo (corre con la pantalla apagada, más o menos una vez al día).
+                    is com.civiclauncher.app.launcher.AppOptimizer.Status.Failed -> "Tras actualizar, Android optimiza Civic solo en su mantenimiento (aprox. un día). Por la PC se puede hacer al momento."
                     else -> "Compila Civic a código nativo para que vaya más fluido. Se hace solo una vez por versión."
                 },
                 showChevron = false,

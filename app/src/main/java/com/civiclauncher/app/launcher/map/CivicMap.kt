@@ -82,6 +82,9 @@ private fun MapViewHost(
     onUserMoved: () -> Unit,
 ) {
     val position = remember { PositionLayer() }
+    // Si la pantalla que lo contiene no se ve (Inicio mientras estás en otra), el mapa se queda
+    // abierto pero escondido y sin seguir al GPS: no dibuja ni sube mosaicos a la GPU.
+    val active = com.civiclauncher.app.launcher.ui.LocalScreenActive.current
     // El listener de toques se crea una vez; así siempre llama a la versión más reciente.
     val latestOnUserMoved = androidx.compose.runtime.rememberUpdatedState(onUserMoved)
     AndroidView(
@@ -114,11 +117,17 @@ private fun MapViewHost(
             }
         },
         update = { mv ->
-            position.set(center, bearing, hasFix)
+            val visibility = if (active) android.view.View.VISIBLE else android.view.View.INVISIBLE
+            if (mv.visibility != visibility) mv.visibility = visibility
+            if (!active) return@AndroidView
+            // La flecha gira de 5 en 5 grados: con el carro parado el rumbo del GPS "tiembla" y cada
+            // temblor redibujaba el mapa entero.
+            position.set(center, bearing?.let { Math.round(it / 5f) * 5f }, hasFix)
             if (follow) {
                 val c = mv.model.mapViewPosition.center
-                // Solo mover si cambió de verdad (≈1 m): cada movimiento redibuja el mapa.
-                if (c == null || kotlin.math.abs(c.latitude - center.latitude) > 0.00001 || kotlin.math.abs(c.longitude - center.longitude) > 0.00001) {
+                // Solo mover si cambió de verdad (≈5 m): estacionado, el GPS brinca unos metros cada
+                // segundo y cada movimiento redibuja y sube el mapa completo a la GPU.
+                if (c == null || kotlin.math.abs(c.latitude - center.latitude) > MIN_MOVE_DEG || kotlin.math.abs(c.longitude - center.longitude) > MIN_MOVE_DEG) {
                     mv.setCenter(center)
                 }
             }
@@ -179,3 +188,6 @@ private class PositionLayer : Layer() {
         canvas.drawPath(arrow, ring)
     }
 }
+
+/** ~5 m: menos que lo que avanza el carro en un segundo a 20 km/h, más que el temblor del GPS. */
+private const val MIN_MOVE_DEG = 0.00005
