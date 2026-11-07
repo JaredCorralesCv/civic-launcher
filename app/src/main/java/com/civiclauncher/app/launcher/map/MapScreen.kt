@@ -99,6 +99,7 @@ fun MapScreen(night: Boolean) {
     val street = rememberStreet(gps)
     var follow by remember { mutableStateOf(true) }
     val handle = remember { MapHandle() }
+    val headingUp by c.launcherPrefs.mapHeadingUp.collectAsStateWithLifecycle()
 
     // Encima del mapa, todo opaco aunque haya fondo de pantalla: si no, las calles se ven a través del texto.
     com.civiclauncher.app.ui.design.OpaqueSurfaces { Box(Modifier.fillMaxSize().padding(start = Civic.space.l, end = Civic.space.l, top = Civic.space.m, bottom = Civic.space.m)) {
@@ -115,6 +116,7 @@ fun MapScreen(night: Boolean) {
                 modifier = Modifier.fillMaxSize(),
                 handle = handle,
                 onUserMoved = { follow = false },
+                headingUp = headingUp,
             )
         }
         // Calle actual y velocidad
@@ -145,6 +147,12 @@ fun MapScreen(night: Boolean) {
             MapButton(P.ArrowsClockwise, "Acercar", label = "+") { handle.zoomIn() }
             MapButton(P.ArrowsClockwise, "Alejar", label = "−") { handle.zoomOut() }
             MapButton(P.NavigationArrowFill, "Centrar en mi ubicación", highlighted = !follow) { follow = true }
+            // Brújula: rumbo arriba (lo de enfrente arriba) o norte arriba. Se recuerda para la próxima vez.
+            MapButton(
+                P.CompassFill,
+                if (headingUp) "Cambiar a norte arriba" else "Cambiar a rumbo arriba",
+                label = if (headingUp) null else "N",
+            ) { c.launcherPrefs.setMapHeadingUp(!headingUp) }
         }
         Row(Modifier.align(Alignment.BottomEnd).padding(Civic.space.l)) {
             CivicButton("Ruta en Android Auto", {

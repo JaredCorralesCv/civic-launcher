@@ -274,6 +274,7 @@ private fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
             initialZoom = 16,
             modifier = Modifier.fillMaxSize(),
             interactive = false,
+            headingUp = c.launcherPrefs.mapHeadingUp.collectAsStateWithLifecycle().value,
         )
         // Capa transparente encima del mapa: el toque abre el mapa completo en lugar de moverlo.
         Box(Modifier.fillMaxSize().clickable(onClick = onOpen))

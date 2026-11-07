@@ -70,13 +70,14 @@ fun BottomBar(current: Dest, onSelect: (Dest) -> Unit) {
     ) {
         val home = current == Dest.HOME || current == Dest.APPS || current == Dest.SETTINGS || current == Dest.CLEANUP || current == Dest.MUSIC
         GlassCircle(if (home) P.HouseFill else P.HouseLight, "Inicio", home) { onSelect(Dest.HOME) }
-        VolumeCapsule(Modifier.width(232.dp))
-        Spacer(Modifier.weight(1f))
+        // Accesos del lado del conductor; el volumen a la derecha, a la mano del copiloto.
         NavPill(P.SpeedometerLight, P.SpeedometerFill, "Vehículo", current == Dest.VEHICLE) { onSelect(Dest.VEHICLE) }
         NavPill(P.MapTrifoldLight, P.MapTrifoldFill, "Mapa", current == Dest.MAP) { onSelect(Dest.MAP) }
         NavPill(P.AndroidLogoLight, P.AndroidLogoFill, "Android Auto", false) { open(VendorApps.ANDROID_AUTO) }
         NavPill(P.RadioLight, P.RadioFill, "Radio", current == Dest.RADIO) { onSelect(Dest.RADIO) }
         NavPill(P.BluetoothLight, P.BluetoothFill, "Bluetooth", false) { open(VendorApps.BLUETOOTH) }
+        Spacer(Modifier.weight(1f))
+        VolumeCapsule(Modifier.width(232.dp))
     }
 }
 

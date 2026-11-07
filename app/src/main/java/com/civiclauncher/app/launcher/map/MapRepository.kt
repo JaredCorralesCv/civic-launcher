@@ -59,6 +59,7 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
         //    colores lisos, así que no se nota.
         //  - Al hacer zoom, el mosaico de respaldo se dibuja rápido, no "bonito".
         org.mapsforge.core.util.Parameters.NUMBER_OF_THREADS = 2
+        org.mapsforge.core.util.Parameters.SQUARE_FRAME_BUFFER = true
         org.mapsforge.core.util.Parameters.ANDROID_32BIT_COLOR = false
         org.mapsforge.core.util.Parameters.PARENT_TILES_RENDERING = org.mapsforge.core.util.Parameters.ParentTilesRendering.SPEED
         AndroidGraphicFactory.createInstance(context.applicationContext as Application)

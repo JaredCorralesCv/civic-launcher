@@ -35,6 +35,15 @@ class LauncherPrefs(context: Context) {
         sp.edit().putString("github_repo", clean).apply()
     }
 
+    private val _mapHeadingUp = MutableStateFlow(sp.getBoolean("map_heading_up", true))
+    /** El mapa gira para que lo que tienes enfrente quede arriba (por defecto). Falso = norte arriba. */
+    val mapHeadingUp: StateFlow<Boolean> = _mapHeadingUp.asStateFlow()
+
+    fun setMapHeadingUp(on: Boolean) {
+        _mapHeadingUp.value = on
+        sp.edit().putBoolean("map_heading_up", on).apply()
+    }
+
     private val _autoHideBar = MutableStateFlow(sp.getBoolean("auto_hide_bar", true))
     /** La barra de abajo se esconde sola tras unos segundos sin tocar la pantalla. */
     val autoHideBar: StateFlow<Boolean> = _autoHideBar.asStateFlow()

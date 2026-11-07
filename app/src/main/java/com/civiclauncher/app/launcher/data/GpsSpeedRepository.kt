@@ -83,17 +83,28 @@ class GpsSpeedRepository(private val context: Context, scope: CoroutineScope) {
         }
         emit(state)
 
+        // Último punto desde el que se calculó un rumbo propio (para cuando el GPS no da rumbo).
+        var bearingAnchor: Location? = null
         val listener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
                 lastFix = SystemClock.elapsedRealtime()
                 // Por debajo de 3 km/h el GPS "tiembla" aunque el carro esté detenido.
                 val kmh = if (location.hasSpeed()) (location.speed * 3.6f).let { if (it < 3f) 0f else it } else null
+                // Rumbo: el del GPS si lo da y vas a más de 5 km/h. Si no lo da (algunos chips a baja
+                // velocidad, el emulador), se calcula con tu propio avance cuando ya recorriste 15 m;
+                // menos que eso sería el temblor del GPS. Detenido, se conserva el último bueno.
+                val anchor = bearingAnchor
+                val computed = when {
+                    anchor == null -> { bearingAnchor = location; null }
+                    anchor.distanceTo(location) >= 15f -> anchor.bearingTo(location).let { (it + 360f) % 360f }.also { bearingAnchor = location }
+                    else -> null
+                }
+                val gpsBearing = if (location.hasBearing() && (kmh ?: 0f) >= 5f && location.bearing != 0f) location.bearing else null
                 emit(
                     state.copy(
                         kmh = kmh,
                         accuracyM = if (location.hasAccuracy()) location.accuracy else null,
-                        // Detenido, la dirección del GPS es ruido: conservamos la última buena.
-                        bearing = if (location.hasBearing() && (kmh ?: 0f) >= 5f) location.bearing else state.bearing,
+                        bearing = gpsBearing ?: computed ?: state.bearing,
                         lat = location.latitude,
                         lon = location.longitude,
                         fresh = true,
