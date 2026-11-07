@@ -180,6 +180,10 @@ private class PositionLayer : Layer() {
     private val ring = gf.createPaint().apply { setColor(0xFFFFFFFF.toInt()); setStyle(Style.FILL) }
     private val fill = gf.createPaint().apply { setColor(0xFF3B8BFF.toInt()); setStyle(Style.FILL) }
     private val stale = gf.createPaint().apply { setColor(0xFF8A939F.toInt()); setStyle(Style.FILL) }
+    // Halo azul alrededor del carro (tres círculos translúcidos: un degradado sin costo extra).
+    private val glow = listOf(42 to 0x1A3B8BFF, 34 to 0x263B8BFF, 27 to 0x403B8BFF).map { (r, color) ->
+        r to gf.createPaint().apply { setColor(color); setStyle(Style.FILL) }
+    }
     private val arrow = gf.createPath()
 
     fun set(p: LatLong, b: Float?, hasFix: Boolean) {
@@ -196,6 +200,7 @@ private class PositionLayer : Layer() {
         val mapSize = MercatorProjection.getMapSize(zoomLevel, tileSize)
         val x = (MercatorProjection.longitudeToPixelX(p.longitude, mapSize) - topLeftPoint.x).toFloat()
         val y = (MercatorProjection.latitudeToPixelY(p.latitude, mapSize) - topLeftPoint.y).toFloat()
+        if (fix) glow.forEach { (r, paint) -> canvas.drawCircle(x.toInt(), y.toInt(), r, paint) }
         canvas.drawCircle(x.toInt(), y.toInt(), 20, ring)
         canvas.drawCircle(x.toInt(), y.toInt(), 16, if (fix) fill else stale)
         // Flecha blanca: punta arriba, girada según el rumbo del GPS.

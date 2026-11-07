@@ -57,14 +57,12 @@ import com.civiclauncher.app.launcher.map.MapSetup
 import com.civiclauncher.app.launcher.map.MapStatus
 import com.civiclauncher.app.launcher.map.mapCenter
 import com.civiclauncher.app.launcher.map.rememberStreet
-import com.civiclauncher.app.launcher.obd.ObdMode
 import com.civiclauncher.app.ui.design.Civic
 import com.civiclauncher.app.ui.design.PhosphorIcons as P
 import com.civiclauncher.app.ui.design.StatusPill
 import com.civiclauncher.app.ui.design.Tone
 import com.civiclauncher.app.ui.design.bevelBorder
 import com.civiclauncher.app.ui.design.color
-import com.civiclauncher.obd.EngineState
 import com.civiclauncher.obd.Pids
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -118,10 +116,8 @@ private fun HomeRail(onOpen: (Dest) -> Unit) {
             .padding(vertical = Civic.space.m),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Solo la hora, el estado y dos accesos discretos: lo demás vive en la barra de abajo.
+        // Solo la hora y accesos discretos: el estado del GPS y del OBD ya lo dicen sus tarjetas.
         RailClock()
-        Spacer(Modifier.height(Civic.space.xs))
-        RailStatus()
         Spacer(Modifier.weight(1f))
         // En medio, tus últimas apps (como el riel de CarPlay). Vacío hasta que abras alguna.
         RecentApps()
@@ -170,27 +166,6 @@ private fun RailClock() {
         else "%d:%02d".format(cal.get(Calendar.HOUR).let { if (it == 0) 12 else it }, cal.get(Calendar.MINUTE))
     }
     Text(text, style = Civic.type.title.copy(fontSize = 20.sp, fontFeatureSettings = "tnum", letterSpacing = (-0.01).em), color = Civic.colors.text)
-}
-
-/** Debajo de la hora: GPS y OBD como dos puntitos con su letra. */
-@Composable
-private fun RailStatus() {
-    val c = LocalContext.current.container
-    val gps by c.gps.speed.collectAsStateWithLifecycle()
-    val obdConfig by c.obd.config.collectAsStateWithLifecycle()
-    val obdState by c.obd.state.collectAsStateWithLifecycle()
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Dot(if (gps.fresh) Tone.Ok else Tone.Warn, 7)
-        Spacer(Modifier.width(3.dp))
-        Text("GPS", style = Civic.type.caption.copy(fontSize = 10.sp), color = Civic.colors.textDim)
-    }
-    if (obdConfig.mode != ObdMode.NONE) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Dot(if (obdState is EngineState.Connected) Tone.Ok else Tone.Warn, 7)
-            Spacer(Modifier.width(3.dp))
-            Text("OBD", style = Civic.type.caption.copy(fontSize = 10.sp), color = Civic.colors.textDim)
-        }
-    }
 }
 
 /** Solo si la pantalla sigue con la hora de China: un aviso que lleva al ajuste. */
@@ -285,6 +260,7 @@ private fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
                 .padding(Civic.space.m)
                 .clip(RoundedCornerShape(50))
                 .background(Civic.colors.surface)
+                .bevelBorder(RoundedCornerShape(50))
                 .padding(horizontal = Civic.space.m, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -302,6 +278,8 @@ private fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
                 .height(52.dp)
                 .clip(RoundedCornerShape(50))
                 .background(Civic.colors.surface)
+                // Filo azul: es la "ruta" del mapa, del mismo color que la flecha del carro.
+                .border(1.dp, Civic.colors.accent.copy(alpha = 0.55f), RoundedCornerShape(50))
                 .padding(horizontal = Civic.space.l),
             verticalAlignment = Alignment.CenterVertically,
         ) {

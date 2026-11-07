@@ -437,40 +437,47 @@ internal fun SourceSwitch(
             .bevelBorder(shape)
             .padding(4.dp),
     ) {
-        Segment(P.BluetoothLight, P.BluetoothFill, "Bluetooth", BarColors.INDIGO.first, current == MusicSource.BLUETOOTH, onBluetooth)
-        Segment(P.RadioLight, P.RadioFill, "Radio", BarColors.RED.first, current == MusicSource.RADIO, onRadio)
+        Segment(P.BluetoothLight, P.BluetoothFill, "Bluetooth", BarColors.INDIGO, current == MusicSource.BLUETOOTH, onBluetooth)
+        Segment(P.RadioLight, P.RadioFill, "Radio", BarColors.RED, current == MusicSource.RADIO, onRadio)
     }
 }
 
 @Composable
-private fun RowScope.Segment(icon: ImageVector, selectedIcon: ImageVector, label: String, tint: Color, selected: Boolean, onClick: () -> Unit) {
+private fun RowScope.Segment(icon: ImageVector, selectedIcon: ImageVector, label: String, tint: Pair<Color, Color>, selected: Boolean, onClick: () -> Unit) {
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
     val c = Civic.colors
     val shape = RoundedCornerShape(50)
+    // La fuente elegida se pinta con su color (azul índigo Bluetooth, rojo la radio), apagado para
+    // que no deslumbre de noche y un poco más claro arriba, como vidrio teñido.
+    val fill = remember(tint) {
+        Brush.verticalGradient(
+            listOf(lerp(tint.first, tint.second, 0.2f).copy(alpha = 0.72f), lerp(tint.first, tint.second, 0.55f).copy(alpha = 0.72f)),
+        )
+    }
     Row(
         Modifier
             .weight(1f)
             .fillMaxHeight()
             .clip(shape)
-            .background(
+            .let {
                 when {
-                    pressed -> c.surfacePressed
-                    selected -> c.selected
-                    else -> Color.Transparent
-                },
-            )
+                    pressed -> it.background(c.surfacePressed)
+                    selected -> it.background(fill)
+                    else -> it
+                }
+            }
             .let { if (selected) it.bevelBorder(shape) else it }
             .clickable(source, indication = null, role = Role.Tab, onClick = onClick),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(if (selected) selectedIcon else icon, null, tint = if (selected) tint else c.textDim, modifier = Modifier.size(20.dp))
+        Icon(if (selected) selectedIcon else icon, null, tint = if (selected) Color.White else c.textDim, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(Civic.space.s))
         Text(
             label,
             style = Civic.type.label.copy(fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal),
-            color = if (selected) c.text else c.textDim,
+            color = if (selected) Color.White else c.textDim,
             maxLines = 1,
         )
     }

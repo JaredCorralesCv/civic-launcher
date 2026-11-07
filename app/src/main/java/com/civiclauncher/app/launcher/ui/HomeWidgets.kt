@@ -35,6 +35,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -271,19 +273,27 @@ fun VehicleSummaryCard(modifier: Modifier, onClick: () -> Unit) {
     }
     val battery by remember { androidx.compose.runtime.derivedStateOf { dataState.value.battery.fresh(30_000)?.value?.let { Math.round(it * 10) / 10.0 } } }
     val engineRunning by remember { androidx.compose.runtime.derivedStateOf { (dataState.value[Pids.RPM].fresh()?.value ?: 0.0) > 500 } }
+    // RPM redondeadas de 50 en 50: el arco se anima solo entre valores que se notan.
+    val rpm by remember(connected) {
+        androidx.compose.runtime.derivedStateOf { if (connected) dataState.value[Pids.RPM].fresh()?.value?.let { Math.round(it / 50.0) * 50f } else null }
+    }
     val alert = live.alerts.firstOrNull()
 
     HomeCard(modifier, onClick = onClick) {
         CardHeader(P.CarSimpleLight, "Vehículo", if (fromObd) "OBD" else "GPS", if (speed != null) Tone.Ok else Tone.Warn)
         Spacer(Modifier.weight(1f))
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                speed?.let { "%.0f".format(it) } ?: "--",
-                style = Civic.type.gaugeValue.copy(fontSize = 46.sp, lineHeight = 50.sp),
-                color = if (speed != null) Civic.colors.text else Civic.colors.textFaint,
-            )
-            Spacer(Modifier.width(6.dp))
-            Text("km/h", style = Civic.type.label, color = Civic.colors.textDim, modifier = Modifier.padding(bottom = 8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    speed?.let { "%.0f".format(it) } ?: "--",
+                    style = Civic.type.gaugeValue.copy(fontSize = 46.sp, lineHeight = 50.sp),
+                    color = if (speed != null) Civic.colors.text else Civic.colors.textFaint,
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("km/h", style = Civic.type.label, color = Civic.colors.textDim, modifier = Modifier.padding(bottom = 8.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            RpmArc(rpm, Modifier.size(width = 132.dp, height = 100.dp))
             Spacer(Modifier.weight(1f))
             live.gear?.let { g ->
                 Box(
@@ -319,12 +329,143 @@ fun VehicleSummaryCard(modifier: Modifier, onClick: () -> Unit) {
             else -> "Sin fallas" to Tone.Ok
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(7.dp).clip(CircleShape).background(tone.color()))
-            Spacer(Modifier.width(Civic.space.s))
-            Text(text, style = Civic.type.caption, color = Civic.colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val warning = tone == Tone.Warn || tone == Tone.Bad
+            if (warning) {
+                // Un aviso de verdad: triángulo y la parte importante en su color; "toca para verlo", gris.
+                Icon(P.WarningFill, null, tint = tone.color(), modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(6.dp))
+                val main = text.substringBefore(" · ")
+                val rest = text.substringAfter(" · ", "")
+                Text(
+                    androidx.compose.ui.text.buildAnnotatedString {
+                        withStyle(androidx.compose.ui.text.SpanStyle(color = tone.color())) { append(main) }
+                        if (rest.isNotEmpty()) append(" · $rest")
+                    },
+                    style = Civic.type.caption,
+                    color = Civic.colors.textDim,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else {
+                Box(Modifier.size(7.dp).clip(CircleShape).background(tone.color()))
+                Spacer(Modifier.width(Civic.space.s))
+                Text(text, style = Civic.type.caption, color = Civic.colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }
+
+/**
+ * Tacómetro: por fuera, una banda gruesa que se va llenando al subir las RPM y cambia de color con
+ * ellas (azul profundo → azul claro → ámbar cerca del corte → rojo en la zona roja), con un halo.
+ * Por dentro, la escala fina (rayitas cada 500 RPM, más largas cada 1000, rojas en la zona roja) y
+ * una aguja de luz. En medio, las RPM en miles. Se mueve suave. Sin OBD: la banda vacía y "--".
+ */
+@Composable
+private fun RpmArc(rpm: Float?, modifier: Modifier) {
+    val fraction by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = ((rpm ?: 0f) / RPM_MAX).coerceIn(0f, 1f),
+        animationSpec = androidx.compose.animation.core.tween(400, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+        label = "rpm",
+    )
+    val dark = Civic.colors.isDark
+    val ink = if (dark) Color.White else Color(0xFF15181D)
+    val minor = ink.copy(alpha = 0.22f)
+    val major = ink.copy(alpha = 0.55f)
+    val track = ink.copy(alpha = 0.08f)
+    val redline = rpm != null && rpm >= RPM_REDLINE
+    Box(modifier) {
+        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+            val band = 6.dp.toPx()
+            val halo = 3.dp.toPx()
+            val bandR = size.width / 2f - halo - band / 2f
+            val center = androidx.compose.ui.geometry.Offset(size.width / 2f, halo + band / 2f + bandR)
+            fun at(radius: Float, deg: Float): androidx.compose.ui.geometry.Offset {
+                val a = Math.toRadians(deg.toDouble())
+                return androidx.compose.ui.geometry.Offset(center.x + radius * kotlin.math.cos(a).toFloat(), center.y + radius * kotlin.math.sin(a).toFloat())
+            }
+            fun angleOf(value: Float) = RPM_START + RPM_SWEEP * value / RPM_MAX
+            val bTop = androidx.compose.ui.geometry.Offset(center.x - bandR, center.y - bandR)
+            val bSize = androidx.compose.ui.geometry.Size(2 * bandR, 2 * bandR)
+            val round = androidx.compose.ui.graphics.drawscope.Stroke(band, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+
+            // Banda vacía; la parte de la zona roja ya se ve rojiza aunque no llegues.
+            drawArc(track, RPM_START, RPM_SWEEP, false, bTop, bSize, style = round)
+            drawArc(RPM_RED.copy(alpha = 0.22f), angleOf(RPM_REDLINE), RPM_START + RPM_SWEEP - angleOf(RPM_REDLINE), false, bTop, bSize, style = androidx.compose.ui.graphics.drawscope.Stroke(band))
+
+            // Escala fina por dentro de la banda.
+            val tickOut = bandR - band / 2f - 4.dp.toPx()
+            var v = 0f
+            while (v <= RPM_MAX) {
+                val isMajor = v % 1000f == 0f
+                val len = if (isMajor) 7.dp.toPx() else 3.5.dp.toPx()
+                val color = when {
+                    v >= RPM_REDLINE -> RPM_RED.copy(alpha = if (isMajor) 0.95f else 0.6f)
+                    isMajor -> major
+                    else -> minor
+                }
+                drawLine(color, at(tickOut, angleOf(v)), at(tickOut - len, angleOf(v)), strokeWidth = if (isMajor) 1.5.dp.toPx() else 1.dp.toPx())
+                v += 500f
+            }
+
+            // Se lee aquí, en el dibujo: la animación solo redibuja, no recompone la tarjeta.
+            val sweep = RPM_SWEEP * fraction
+            if (sweep < 0.5f) return@Canvas
+            // Los colores están fijos en la escala: al subir, la banda "descubre" el ámbar y el rojo.
+            val span = RPM_SWEEP / 360f
+            val fill = Brush.sweepGradient(
+                0f to Color(0xFF1F4FE0),
+                span * 0.55f to Color(0xFF3B8BFF),
+                span * (RPM_SHIFT / RPM_MAX) to Color(0xFF7CC8FF),
+                span * (5300f / RPM_MAX) to Color(0xFFFFB020),
+                span * (RPM_REDLINE / RPM_MAX) to RPM_RED,
+                1f to RPM_RED,
+                center = center,
+            )
+            rotate(RPM_START, center) {
+                // Halo y banda; el degradado empieza en 0° (por eso se gira el lienzo).
+                drawArc(fill, 0f, sweep, false, bTop, bSize, alpha = 0.28f, style = androidx.compose.ui.graphics.drawscope.Stroke(band + halo * 2f, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+                drawArc(fill, 0f, sweep, false, bTop, bSize, style = round)
+            }
+            // Aguja de luz: de la escala hasta la banda.
+            val tipAngle = RPM_START + sweep
+            val needle = if (redline) RPM_RED else Color.White
+            val from = at(tickOut - 10.dp.toPx(), tipAngle)
+            val to = at(bandR, tipAngle)
+            drawLine(needle.copy(alpha = 0.25f), from, to, strokeWidth = 6.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            drawLine(needle, from, to, strokeWidth = 2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        }
+        Column(
+            Modifier.align(Alignment.TopCenter).padding(top = 47.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                rpm?.let { "%.1f".format(it / 1000f) } ?: "--",
+                style = Civic.type.title.copy(fontSize = 24.sp, lineHeight = 26.sp, fontWeight = FontWeight.Light, fontFeatureSettings = "tnum", letterSpacing = (-0.01).em),
+                color = when {
+                    rpm == null -> Civic.colors.textFaint
+                    redline -> RPM_RED
+                    else -> Civic.colors.text
+                },
+            )
+            Text(
+                "RPM ×1000",
+                style = Civic.type.caption.copy(fontSize = 8.sp, lineHeight = 10.sp, letterSpacing = 0.18.em),
+                color = Civic.colors.textFaint,
+            )
+        }
+    }
+}
+
+private const val RPM_MAX = 7000f
+/** Zona roja del motor del Civic (corta cerca de 6800). */
+private const val RPM_REDLINE = 6000f
+/** Desde aquí la banda empieza a ponerse ámbar: "ya cambia". */
+private const val RPM_SHIFT = 4500f
+private val RPM_RED = Color(0xFFFF453A)
+/** El arco empieza abajo a la izquierda (150°) y da 240° pasando por arriba. */
+private const val RPM_START = 150f
+private const val RPM_SWEEP = 240f
 
 @Composable
 private fun RowScope.Stat(label: String, value: String, color: Color, unit: String? = null) {
