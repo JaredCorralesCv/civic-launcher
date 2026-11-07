@@ -56,7 +56,10 @@ import com.civiclauncher.obd.Reading
 @Composable
 fun rememberSpeed(): Pair<Double?, Boolean> {
     val c = LocalContext.current.container
-    val gps by c.gps.speed.collectAsStateWithLifecycle()
+    val gps = c.gps.speed.collectAsStateWithLifecycle()
+    // Del GPS solo la velocidad entera: cada ubicación nueva (una por segundo, aunque estés parado)
+    // ya no vuelve a dibujar la tarjeta de Vehículo si el número que se ve es el mismo.
+    val gpsKmh by remember { androidx.compose.runtime.derivedStateOf { gps.value.kmh?.let { Math.round(it).toDouble() } } }
     val obdState by c.obd.state.collectAsStateWithLifecycle()
     val obdData = c.obd.data.collectAsStateWithLifecycle()
     val connected = obdState is EngineState.Connected
@@ -66,7 +69,7 @@ fun rememberSpeed(): Pair<Double?, Boolean> {
             if (connected) obdData.value[com.civiclauncher.obd.Pids.SPEED].fresh(5_000)?.value?.let { Math.round(it).toDouble() } else null
         }
     }
-    return (obd ?: gps.kmh?.toDouble()) to (obd != null)
+    return (obd ?: gpsKmh) to (obd != null)
 }
 
 /** Un dato del OBD solo se muestra si llegó hace menos de 10 s; si no, es viejo y engañaría. */

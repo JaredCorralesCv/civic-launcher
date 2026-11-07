@@ -359,6 +359,11 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
             ?: md.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
         val artKey = bmp?.let { System.identityHashCode(it) } ?: title
         if (artKey == lastArtKey) {
+            // El Bluetooth avisa el avance cada segundo. La barra ya avanza sola con positionAt, así
+            // que si la canción y el estado son los mismos y la posición cuadra, no se avisa nada:
+            // antes la tarjeta de música se volvía a armar cada segundo.
+            val previous = (_state.value as? MediaState.Active)?.now
+            if (previous != null && sameExceptProgress(previous, base)) return
             _state.value = MediaState.Active(base)
             return
         }
@@ -374,6 +379,19 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
                 (_state.value as? MediaState.Active)?.let { _state.value = MediaState.Active(it.now.copy(art = prepared.first, artColor = prepared.second)) }
             }
         }
+    }
+
+    /**
+     * ¿Es lo mismo que ya se muestra, salvo el avance que la barra ya calcula sola? Se compara la
+     * posición que la barra estaría marcando ahora con la que manda la app (menos de 1.5 s de
+     * diferencia = no hubo salto, solo el reloj).
+     */
+    private fun sameExceptProgress(a: NowPlaying, b: NowPlaying): Boolean {
+        if (a.copy(positionMs = null, positionAt = 0, art = null, artColor = null) != b.copy(positionMs = null, positionAt = 0, art = null, artColor = null)) return false
+        val pa = a.positionMs ?: return b.positionMs == null
+        val pb = b.positionMs ?: return false
+        val expected = if (a.playing) pa + ((b.positionAt - a.positionAt) * a.speed).toLong() else pa
+        return kotlin.math.abs(expected - pb) < 1_500
     }
 
     private fun prepareArt(src: Bitmap): Pair<ImageBitmap, Color> {

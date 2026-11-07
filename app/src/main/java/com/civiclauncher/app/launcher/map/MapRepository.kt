@@ -250,10 +250,24 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
         streetFilePath = null
     }
 
+    /** Un tramo de calle con nombre, ya sacado del mapa. */
+    private class StreetSegment(val name: String, val a: LatLong, val b: LatLong)
+
+    // El mosaico leído la última vez: mide ~600 m, así que mientras sigas dentro no se vuelve a leer
+    // del disco (antes se leía y se recorría completo cada ~22 m, y dos veces si el mapa completo
+    // también estaba abierto).
+    private var segmentsTile: Tile? = null
+    private var segments: List<StreetSegment> = emptyList()
+    private var lastStreet: String? = null
+
     /**
-     * Nombre de la calle más cercana (a menos de 35 m), leyendo el propio mapa. Sin internet.
+     * Nombre de la calle en la que vas (a menos de 35 m), leyendo el propio mapa. Sin internet.
+     *
+     * No basta con la más cercana: en un cruce, la calle de enfrente queda igual de cerca. Con
+     * [bearing] se prefieren las calles que van en tu misma dirección, y la calle de antes se queda
+     * mientras siga casi igual de buena (así no brinca a la transversal en cada esquina).
      */
-    suspend fun streetAt(lat: Double, lon: Double): String? = streetLock.withLock {
+    suspend fun streetAt(lat: Double, lon: Double, bearing: Float?): String? = streetLock.withLock {
         val file = (status.value as? MapStatus.Ready)?.file ?: return@withLock null
         withContext(Dispatchers.IO) {
             runCatching {
@@ -261,30 +275,58 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
                     closeStreetFile()
                     streetFile = MapFile(file, "es")
                     streetFilePath = file.path
+                    segmentsTile = null
                 }
-                val mf = streetFile!!
                 val zoom: Byte = 16
                 val tile = Tile(MercatorProjection.longitudeToTileX(lon, zoom), MercatorProjection.latitudeToTileY(lat, zoom), zoom, 256)
-                val result = mf.readMapData(tile) ?: return@runCatching null
-                var best: String? = null
-                var bestDist = 35.0
-                for (way in result.ways) {
-                    val highway = way.tags.firstOrNull { it.key == "highway" }?.value ?: continue
-                    if (highway !in DRIVABLE) continue
-                    val name = way.tags.firstOrNull { it.key == "name" }?.value ?: continue
-                    for (line in way.latLongs) {
-                        for (i in 0 until line.size - 1) {
-                            val d = distanceToSegmentM(lat, lon, line[i], line[i + 1])
-                            if (d < bestDist) {
-                                bestDist = d
-                                best = name
-                            }
-                        }
-                    }
+                if (tile != segmentsTile) {
+                    segments = readSegments(streetFile!!, tile)
+                    segmentsTile = tile
                 }
-                best
+                var best: String? = null
+                var bestScore = Double.MAX_VALUE
+                var previousScore = Double.MAX_VALUE
+                for (s in segments) {
+                    val d = distanceToSegmentM(lat, lon, s.a, s.b)
+                    if (d > 35.0) continue
+                    // Una calle perpendicular a tu rumbo "cuenta" como si estuviera 3 veces más lejos.
+                    val score = d * (1.0 + 2.0 * crossing(s, bearing, lat))
+                    if (score < bestScore) {
+                        bestScore = score
+                        best = s.name
+                    }
+                    if (s.name == lastStreet && score < previousScore) previousScore = score
+                }
+                val keep = lastStreet != null && previousScore <= bestScore * 1.3 + 3.0
+                (if (keep) lastStreet else best).also { lastStreet = it }
             }.getOrNull()
         }
+    }
+
+    private fun readSegments(mf: MapFile, tile: Tile): List<StreetSegment> {
+        val result = mf.readMapData(tile) ?: return emptyList()
+        val out = ArrayList<StreetSegment>()
+        for (way in result.ways) {
+            val highway = way.tags.firstOrNull { it.key == "highway" }?.value ?: continue
+            if (highway !in DRIVABLE) continue
+            val name = way.tags.firstOrNull { it.key == "name" }?.value ?: continue
+            for (line in way.latLongs) {
+                for (i in 0 until line.size - 1) out += StreetSegment(name, line[i], line[i + 1])
+            }
+        }
+        return out
+    }
+
+    /** 0 si el tramo va en tu dirección (o en sentido contrario), 1 si lo cruzas de lado. 0 sin rumbo. */
+    private fun crossing(s: StreetSegment, bearing: Float?, lat: Double): Double {
+        if (bearing == null) return 0.0
+        val dx = (s.b.longitude - s.a.longitude) * cos(Math.toRadians(lat))
+        val dy = s.b.latitude - s.a.latitude
+        if (dx == 0.0 && dy == 0.0) return 0.0
+        val segBearing = Math.toDegrees(kotlin.math.atan2(dx, dy))
+        var diff = ((segBearing - bearing) % 180.0 + 180.0) % 180.0
+        if (diff > 90.0) diff = 180.0 - diff
+        return kotlin.math.sin(Math.toRadians(diff))
     }
 
     private fun distanceToSegmentM(lat: Double, lon: Double, a: LatLong, b: LatLong): Double {

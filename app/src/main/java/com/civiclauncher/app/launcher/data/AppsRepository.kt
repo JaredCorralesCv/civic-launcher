@@ -32,6 +32,12 @@ class AppsRepository(private val context: Context, private val scope: CoroutineS
     val apps: StateFlow<List<LaunchableApp>> = _apps.asStateFlow()
     private val icons = LruCache<String, ImageBitmap>(160)
 
+    // Antes del init: refresh() (que corre en init) ya los usa.
+    private val sp = context.getSharedPreferences("apps", Context.MODE_PRIVATE)
+    private val _recent = MutableStateFlow(loadRecent())
+    /** Las últimas apps que abriste desde Civic (la más reciente primero), para el riel de Inicio. */
+    val recent: StateFlow<List<LaunchableApp>> = _recent.asStateFlow()
+
     init {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context, intent: Intent) {
@@ -60,6 +66,10 @@ class AppsRepository(private val context: Context, private val scope: CoroutineS
                 .distinctBy { it.pkg to it.activity }
                 .sortedWith { a, b -> collator.compare(a.label, b.label) }
             _apps.value = list
+            // Si desinstalaste una app reciente, que no se quede como hueco en el riel de Inicio.
+            val installed = list.mapTo(HashSet()) { it.pkg to it.activity }
+            val kept = _recent.value.filter { (it.pkg to it.activity) in installed }
+            if (list.isNotEmpty() && kept.size != _recent.value.size) saveRecent(kept)
         }
     }
 
@@ -88,11 +98,6 @@ class AppsRepository(private val context: Context, private val scope: CoroutineS
 
     // ------------------------------------------------------------------ Recientes
 
-    private val sp = context.getSharedPreferences("apps", Context.MODE_PRIVATE)
-    private val _recent = MutableStateFlow(loadRecent())
-    /** Las últimas apps que abriste desde Civic (la más reciente primero), para el riel de Inicio. */
-    val recent: StateFlow<List<LaunchableApp>> = _recent.asStateFlow()
-
     private fun loadRecent(): List<LaunchableApp> =
         sp.getString("recent", "").orEmpty().split('\n').mapNotNull { line ->
             val parts = line.split('\t')
@@ -100,7 +105,10 @@ class AppsRepository(private val context: Context, private val scope: CoroutineS
         }
 
     private fun rememberRecent(app: LaunchableApp) {
-        val list = (listOf(app) + _recent.value.filterNot { it.pkg == app.pkg }).take(MAX_RECENT)
+        saveRecent((listOf(app) + _recent.value.filterNot { it.pkg == app.pkg }).take(MAX_RECENT))
+    }
+
+    private fun saveRecent(list: List<LaunchableApp>) {
         _recent.value = list
         sp.edit().putString("recent", list.joinToString("\n") { "${it.pkg}\t${it.activity}\t${it.label}" }).apply()
     }

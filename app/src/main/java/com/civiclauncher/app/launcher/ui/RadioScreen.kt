@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -41,6 +40,20 @@ import com.civiclauncher.app.ui.design.PhosphorIcons as P
 import com.civiclauncher.app.ui.design.bevelBorder
 
 /**
+ * Pregunta la frecuencia a la radio cada segundo, pero solo mientras esto se ve: no con Inicio
+ * escondido detrás de otra pantalla, ni en Android Auto, ni con la pantalla apagada.
+ */
+@Composable
+internal fun WatchRadio() {
+    val radio = LocalContext.current.container.radio
+    val active = LocalScreenActive.current
+    androidx.lifecycle.compose.LifecycleStartEffect(active) {
+        if (active) radio.startWatching()
+        onStopOrDispose { if (active) radio.stopWatching() }
+    }
+}
+
+/**
  * Radio de Civic: la frecuencia grande, un dial con aguja y los controles (buscar estación hacia
  * atrás / adelante, silencio). Para guardar o elegir estaciones guardadas se abre la app del
  * fabricante con "Estaciones". Al entrar, la radio se vuelve la fuente de audio.
@@ -51,10 +64,7 @@ fun RadioScreen(onOpen: (Dest) -> Unit) {
     val c = ctx.container
     val radio = c.radio
     val info by radio.info.collectAsStateWithLifecycle()
-    DisposableEffect(Unit) {
-        radio.startWatching()
-        onDispose { radio.stopWatching() }
-    }
+    WatchRadio()
     // Entrar a la radio = escuchar la radio.
     LaunchedEffect(Unit) { radio.activate() }
 

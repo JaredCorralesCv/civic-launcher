@@ -95,8 +95,10 @@ class ObdEngine(
     private suspend fun runLoop() {
         var attempt = 0
         while (coroutineContext.isActive) {
-            val transport = transportFactory()
+            var transport: ObdTransport? = null
             try {
+                // Dentro del try: si crear la conexión falla, se reintenta en vez de tumbar la app.
+                transport = transportFactory()
                 _state.value = EngineState.Connecting(attempt + 1)
                 val session = ElmSession(transport)
                 session.start()
@@ -113,7 +115,7 @@ class ObdEngine(
             } finally {
                 session = null
                 // NonCancellable: al detener el motor hay que soltar el Bluetooth aunque nos cancelen.
-                withContext(NonCancellable) { runCatching { transport.close() } }
+                withContext(NonCancellable) { runCatching { transport?.close() } }
             }
         }
     }
@@ -165,8 +167,10 @@ class ObdEngine(
             }
             var answered = 0
             var asked = 0
+            // Todo lo de esta vuelta se publica junto al final: un solo aviso por vuelta (antes eran hasta
+            // cinco), así la pantalla y los cálculos no se repiten por cada tanda.
+            val fresh = mutableMapOf<Int, Reading>()
             for (group in groups) {
-                val fresh = mutableMapOf<Int, Reading>()
                 val missing = mutableListOf<PidSpec>()
                 fun answer(spec: PidSpec, value: Double) {
                     answered++
@@ -196,9 +200,11 @@ class ObdEngine(
                     noDataCount[spec.pid] = n
                     if (n >= 3 && group !== fast) group.remove(spec)
                 }
-                if (fresh.isNotEmpty()) _data.update { it.copy(values = it.values + fresh) }
             }
-            if (cycle % 10 == 0L) readBattery(session)
+            val battery = if (cycle % 10 == 0L) batteryReading(session) else null
+            if (fresh.isNotEmpty() || battery != null) {
+                _data.update { it.copy(values = if (fresh.isEmpty()) it.values else it.values + fresh, battery = battery ?: it.battery) }
+            }
 
             // Códigos de falla: cada 2 minutos, o enseguida si cambió el foco / la cantidad (PID 01).
             if (refreshDtcsRequested || clock() - lastDtcCheck > DTC_REFRESH_MS || monitorChanged()) {
@@ -266,10 +272,11 @@ class ObdEngine(
     }
 
     private suspend fun readBattery(session: ElmSession) {
-        (session.batteryVoltage() as? ObdResult.Value)?.let { v ->
-            _data.update { it.copy(battery = Reading(v.value, clock())) }
-        }
+        batteryReading(session)?.let { b -> _data.update { it.copy(battery = b) } }
     }
+
+    private suspend fun batteryReading(session: ElmSession): Reading? =
+        (session.batteryVoltage() as? ObdResult.Value)?.let { Reading(it.value, clock()) }
 
     companion object {
         /** Cada vuelta: lo que se ve moverse y lo que necesita el cálculo de consumo. */

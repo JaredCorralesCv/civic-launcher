@@ -62,6 +62,9 @@ object GearEstimator {
     /** RPM por cada km/h en cada marcha. */
     private val RPM_PER_KMH = doubleArrayOf(117.8, 67.8, 43.7, 33.2, 26.6)
 
+    /** Tabla de fábrica (copia), punto de partida de [GearTracker]. */
+    fun defaultRatios(): DoubleArray = RPM_PER_KMH.copyOf()
+
     fun estimate(rpm: Double?, speedKmh: Double?): Int? {
         if (rpm == null || speedKmh == null || speedKmh < 8 || rpm < 900) return null
         val ratio = rpm / speedKmh

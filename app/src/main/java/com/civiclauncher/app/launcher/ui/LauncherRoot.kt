@@ -103,11 +103,6 @@ fun LauncherRoot(homePresses: Flow<Unit>) {
         }
     }
 
-    if (dest == Dest.DIAG) {
-        DiagHost(onBack = { dest = Dest.SETTINGS })
-        return
-    }
-
     val night by nightState
     val wallpaper by c.wallpapers.image.collectAsStateWithLifecycle()
     val brightness by c.wallpapers.brightness.collectAsStateWithLifecycle()
@@ -135,7 +130,12 @@ fun LauncherRoot(homePresses: Flow<Unit>) {
                     modifier = Modifier.fillMaxSize(),
                 )
             }
-            LauncherContent(dest, night) { dest = it }
+            // Con Diagnóstico abierto, el launcher sigue armado pero sin dibujarse: al volver, Inicio y su
+            // mapa siguen ahí (antes se destruían y el mapa se cargaba desde cero).
+            Box(Modifier.fillMaxSize().visibleOnly(dest != Dest.DIAG)) {
+                LauncherContent(dest, night) { dest = it }
+            }
+            if (dest == Dest.DIAG) DiagHost(onBack = { dest = Dest.SETTINGS })
         }
     }
 }

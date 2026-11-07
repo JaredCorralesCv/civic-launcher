@@ -25,7 +25,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -152,10 +151,7 @@ private fun ColumnScope.Playing(now: NowPlaying, onOpen: () -> Unit) {
 private fun ColumnScope.RadioNow(onOpenRadio: () -> Unit) {
     val radio = LocalContext.current.container.radio
     val info by radio.info.collectAsStateWithLifecycle()
-    DisposableEffect(Unit) {
-        radio.startWatching()
-        onDispose { radio.stopWatching() }
-    }
+    WatchRadio()
     val source = remember { MutableInteractionSource() }
     CardHeader(P.RadioLight, "Radio", info.band ?: "FM", Tone.Warn)
     Row(
@@ -419,7 +415,9 @@ private fun RpmArc(rpm: Float?, modifier: Modifier) {
                 span * (RPM_SHIFT / RPM_MAX) to Color(0xFF7CC8FF),
                 span * (5300f / RPM_MAX) to Color(0xFFFFB020),
                 span * (RPM_REDLINE / RPM_MAX) to RPM_RED,
-                1f to RPM_RED,
+                span to RPM_RED,
+                // Después del final vuelve al azul: la punta redonda del inicio toma este color, no rojo.
+                1f to Color(0xFF1F4FE0),
                 center = center,
             )
             rotate(RPM_START, center) {

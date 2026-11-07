@@ -84,9 +84,11 @@ fun MusicScreen(onOpen: (Dest) -> Unit) {
             Spacer(Modifier.weight(1f))
             // De dónde viene la música (no se muestra con la música de prueba, que sale de Civic).
             if (now != null && now.pkg != ctx.packageName) {
-                val label = appLabel(now.source, now.pkg, ctx.packageName, ctx.container.apps.labelOf(now.pkg))
+                // El nombre de la app se pregunta al sistema una vez por app, no en cada redibujo.
+                val appName = remember(now.pkg) { ctx.container.apps.labelOf(now.pkg) }
+                val label = appLabel(now.source, now.pkg, ctx.packageName, appName)
                 Text(
-                    if (now.source == MusicSource.APP) (ctx.container.apps.labelOf(now.pkg) ?: "Reproduciendo") else sourceLabel(now.source),
+                    if (now.source == MusicSource.APP) (appName ?: "Reproduciendo") else sourceLabel(now.source),
                     style = Civic.type.title.copy(fontSize = 19.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Normal),
                     color = Civic.colors.textDim,
                     maxLines = 1,

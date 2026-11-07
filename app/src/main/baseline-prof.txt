@@ -1,0 +1,16 @@
+# Guía de compilación (Baseline Profile) de Civic.
+#
+# En Android 8.1 las apps recién instaladas corren interpretadas y Android solo las compila en su
+# mantenimiento (aprox. una vez al día), y únicamente lo que alcanzó a ver en uso. Con esta guía, ese
+# primer mantenimiento compila TODO el código de Civic y del mapa, no solo lo que se usó ese día.
+#
+# Las bibliotecas (Compose, corrutinas) traen sus propias guías; aquí va lo nuestro.
+# H = caliente, S = al arrancar, P = después de arrancar. ** = cualquier clase o método.
+
+# Todo Civic (launcher, OBD, mapa, música, diseño).
+HSPLcom/civiclauncher/**;->**(**)**
+Lcom/civiclauncher/**;
+
+# Mapsforge: dibujar mosaicos y leer el mapa es lo más pesado de Inicio.
+HSPLorg/mapsforge/**;->**(**)**
+Lorg/mapsforge/**;

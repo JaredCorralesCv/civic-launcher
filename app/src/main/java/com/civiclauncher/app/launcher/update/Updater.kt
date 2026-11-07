@@ -89,7 +89,9 @@ class Updater(private val context: Context, private val scope: CoroutineScope) {
                         val buf = ByteArray(64 * 1024)
                         var read = 0L
                         var lastReport = 0L
-                        while (isActive) {
+                        while (true) {
+                            // Si cancelaste, no se marca como "lista" una descarga a medias.
+                            if (!isActive) throw kotlinx.coroutines.CancellationException()
                             val n = input.read(buf)
                             if (n < 0) break
                             out.write(buf, 0, n)
@@ -101,8 +103,16 @@ class Updater(private val context: Context, private val scope: CoroutineScope) {
                         }
                     }
                 }
+                // Un APK incompleto fallaría al instalar con un error confuso: mejor decirlo aquí.
+                if (total > 0 && file.length() != total) {
+                    file.delete()
+                    error("La descarga quedó incompleta; vuelve a intentarlo")
+                }
                 UpdateState.Ready(available.version, file)
-            }.getOrElse { UpdateState.Error(friendly(it)) }
+            }.getOrElse {
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                UpdateState.Error(friendly(it))
+            }
         }
     }
 

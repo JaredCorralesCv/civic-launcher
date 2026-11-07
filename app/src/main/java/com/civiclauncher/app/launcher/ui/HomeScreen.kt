@@ -219,7 +219,12 @@ private fun TopIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, label
 private fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
     val c = LocalContext.current.container
     val status by c.map.status.collectAsStateWithLifecycle()
-    val gps by c.gps.speed.collectAsStateWithLifecycle()
+    val gpsState = c.gps.speed.collectAsStateWithLifecycle()
+    // Con Inicio escondido (estás en otra pantalla) no se lee el GPS: la tarjeta se queda con la última
+    // ubicación y no se vuelve a armar cada segundo para nada. Al volver, retoma al instante.
+    val active = LocalScreenActive.current
+    val lastGps = remember { arrayOf(gpsState.value) }
+    val gps = if (active) gpsState.value.also { lastGps[0] = it } else lastGps[0]
     val ready = status as? MapStatus.Ready
     // Por si copiaste el mapa por adb o USB mientras Civic estaba abierto.
     androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) { c.map.refresh() }

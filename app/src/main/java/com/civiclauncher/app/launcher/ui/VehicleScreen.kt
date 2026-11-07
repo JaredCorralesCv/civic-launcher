@@ -122,14 +122,14 @@ fun VehicleScreen() {
         if (config.mode == ObdMode.NONE) {
             SetupCard(onChoose = { picker = true }, onSimulator = { repo.useSimulator() })
         } else {
-            ConnectionBanner(state, data.value)
+            ConnectionBanner(state, data)
             live.alerts.firstOrNull()?.let { AlertStrip(it) }
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (tab) {
                     VehicleTab.LIVE -> LiveTab(data, live)
                     VehicleTab.TRIP -> TripTab()
                     VehicleTab.DIAG -> DiagTab(state)
-                    VehicleTab.SENSORS -> SensorsTab(data.value)
+                    VehicleTab.SENSORS -> SensorsTab(data)
                 }
             }
         }
@@ -222,10 +222,12 @@ private fun BigValue(value: String, unit: String, color: Color = Civic.colors.te
 
 /** Mientras no hay datos (conectando, carro apagado…), qué está pasando, en una línea. */
 @Composable
-private fun ConnectionBanner(state: EngineState, data: VehicleData) {
+private fun ConnectionBanner(state: EngineState, data: State<VehicleData>) {
+    // Los datos se leen aquí adentro (y solo con el carro apagado): así cada lectura del OBD ya no
+    // vuelve a armar la pantalla de Vehículo completa.
     val (text, tone) = when (state) {
         is EngineState.CarOff -> "Carro apagado: el adaptador responde, pero el carro no. Pon la llave en ON." +
-            (data.battery?.value?.let { " Batería: %.1f V".format(it) } ?: "") to Tone.Cool
+            (data.value.battery?.value?.let { " Batería: %.1f V".format(it) } ?: "") to Tone.Cool
         is EngineState.Reconnecting -> "Sin conexión con el adaptador (${state.reason}). Reintento en ${state.retryInMs / 1000} s." to Tone.Bad
         is EngineState.Detecting -> "Hablando con el carro… la primera vez puede tardar hasta 10 segundos." to Tone.Warn
         is EngineState.Connecting -> "Conectando con el adaptador…" to Tone.Warn
@@ -276,9 +278,30 @@ private fun LiveTab(data: State<VehicleData>, live: LiveDerived) {
             GaugePanel { Gauge(value(Pids.SPEED, 0f), 0f, 180f, "Velocidad", "km/h", Modifier.align(Alignment.CenterHorizontally), size = 196.dp) }
             GaugePanel { Gauge(value(Pids.COOLANT_TEMP, 40f), 40f, 120f, "Temperatura", "°C", Modifier.align(Alignment.CenterHorizontally), size = 196.dp, warnAt = 100f, dangerAt = 108f, majorTicks = 4) }
         }
+        LiveMetrics(data, live)
+    }
+}
+
+/** Lo que se ve en los cuadros de abajo, ya redondeado: si no cambia lo visible, no se redibuja. */
+private data class MetricsView(val battery: Double?, val engineOn: Boolean, val stopped: Boolean, val throttle: Long?, val fuelSystem: Int?)
+
+@Composable
+private fun LiveMetrics(data: State<VehicleData>, live: LiveDerived) {
+    val view by remember {
+        androidx.compose.runtime.derivedStateOf {
+            val d = data.value
+            MetricsView(
+                battery = d.battery.fresh(30_000)?.value?.let { Math.round(it * 10) / 10.0 },
+                engineOn = (d[Pids.RPM].fresh()?.value ?: 0.0) > 500,
+                stopped = (d[Pids.SPEED].fresh()?.value ?: 0.0) < 3,
+                throttle = d[Pids.THROTTLE].fresh()?.value?.let { Math.round(it) },
+                fuelSystem = d[Pids.FUEL_SYSTEM].fresh(30_000)?.value?.toInt(),
+            )
+        }
+    }
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Civic.space.m)) {
-            val battery = data.value.battery.fresh(30_000)?.value
-            val rpm = data.value[Pids.RPM].fresh()?.value
+            val battery = view.battery
+            val rpm = if (view.engineOn) 1_000.0 else null
             Metric(
                 "Batería",
                 battery?.let { "%.1f".format(it) } ?: "--", "V",
@@ -308,22 +331,20 @@ private fun LiveTab(data: State<VehicleData>, live: LiveDerived) {
             )
             Metric(
                 "Marcha",
-                live.gear?.toString() ?: if ((data.value[Pids.SPEED].fresh()?.value ?: 0.0) < 3) "P/N" else "–",
+                live.gear?.toString() ?: if (view.stopped) "P/N" else "–",
                 "",
                 Civic.colors.text,
                 Modifier.weight(1f).fillMaxHeight(),
                 "Estimada",
             )
-            val throttle = data.value[Pids.THROTTLE].fresh()?.value
             Metric(
                 "Acelerador",
-                throttle?.let { "%.0f".format(it) } ?: "--", "%",
+                view.throttle?.toString() ?: "--", "%",
                 Civic.colors.text,
                 Modifier.weight(1f).fillMaxHeight(),
-                Pids.fuelSystemText(data.value[Pids.FUEL_SYSTEM].fresh(30_000)?.value) ?: "Posición",
+                Pids.fuelSystemText(view.fuelSystem?.toDouble()) ?: "Posición",
             )
         }
-    }
 }
 
 @Composable
@@ -397,7 +418,9 @@ private fun DiagTab(state: EngineState) {
     val ctx = LocalContext.current
     val repo = ctx.container.obd
     val diag by repo.diagnostics.collectAsStateWithLifecycle()
-    val data by repo.data.collectAsStateWithLifecycle()
+    val dataState = repo.data.collectAsStateWithLifecycle()
+    // Solo los km desde el último borrado: lo demás del OBD no debe redibujar esta pestaña.
+    val sinceClear by remember { androidx.compose.runtime.derivedStateOf { dataState.value[Pids.DIST_SINCE_CLEAR].fresh(600_000)?.value?.toInt() } }
     val scope = rememberCoroutineScope()
     var confirm by remember { mutableStateOf(false) }
     val connected = state is EngineState.Connected
@@ -463,8 +486,7 @@ private fun DiagTab(state: EngineState) {
             Panel(Modifier.fillMaxWidth()) {
                 InfoRow("VIN", diag.vin ?: "--")
                 InfoRow("Protocolo", diag.protocol ?: "--")
-                val sinceClear = data[Pids.DIST_SINCE_CLEAR].fresh(600_000)?.value
-                InfoRow("Desde el último borrado", sinceClear?.let { "%,d km".format(it.toInt()) } ?: "--")
+                InfoRow("Desde el último borrado", sinceClear?.let { "%,d km".format(it) } ?: "--")
             }
         }
     }
@@ -540,7 +562,8 @@ private fun InfoRow(label: String, value: String) {
 
 /** Todo lo que el carro reporta, agrupado. Solo aparecen los datos que tu carro sí tiene. */
 @Composable
-private fun SensorsTab(data: VehicleData) {
+private fun SensorsTab(dataState: State<VehicleData>) {
+    val data = dataState.value
     val groups = remember(data) {
         PidGroup.entries.mapNotNull { g ->
             val items = Pids.all.filter { it.group == g && it != Pids.MONITOR_STATUS }

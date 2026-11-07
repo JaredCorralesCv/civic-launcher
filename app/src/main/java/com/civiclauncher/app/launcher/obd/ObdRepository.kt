@@ -8,7 +8,8 @@ import androidx.core.content.ContextCompat
 import com.civiclauncher.obd.Diagnostics
 import com.civiclauncher.obd.EngineState
 import com.civiclauncher.obd.FuelModel
-import com.civiclauncher.obd.GearEstimator
+import com.civiclauncher.obd.AlertFilter
+import com.civiclauncher.obd.GearTracker
 import com.civiclauncher.obd.Pids
 import com.civiclauncher.obd.TripComputer
 import com.civiclauncher.obd.TripStats
@@ -21,6 +22,7 @@ import com.civiclauncher.obd.ObdTransport
 import com.civiclauncher.obd.SimulatedElm
 import com.civiclauncher.obd.VehicleData
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -79,6 +81,9 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
 
     // ------------------------------------------------------------------ Viaje y cálculos
 
+    /** Un solo hilo de fondo para los cálculos: el viaje se suma en orden y sin choques. */
+    private val calc = Dispatchers.Default.limitedParallelism(1)
+
     private val tripPrefs = context.getSharedPreferences("trip", Context.MODE_PRIVATE)
     private val trip = TripComputer(loadTrip())
     private val _tripStats = MutableStateFlow(trip.stats)
@@ -89,6 +94,13 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
     /** Lo calculado al momento: consumo, marcha y avisos. */
     val live: StateFlow<LiveDerived> = _live.asStateFlow()
     private var lastSaveMs = 0L
+    /** Avisos con tolerancia (no parpadean ni saltan por un bajón de un segundo). */
+    private val alertFilter = AlertFilter()
+    /** Marcha que aprende las relaciones de tu carro; se guardan para la próxima vez. */
+    private val gears = GearTracker(
+        tripPrefs.getString("gear_ratios", null)?.split(',')?.mapNotNull { it.toDoubleOrNull() }?.toDoubleArray()
+            ?: com.civiclauncher.obd.GearEstimator.defaultRatios(),
+    )
     private var lastRunningMs = tripPrefs.getLong("last_running", 0L)
 
     private fun loadTrip() = TripStats(
@@ -106,6 +118,7 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
             .putFloat("km", s.distanceKm.toFloat()).putFloat("liters", s.fuelLiters.toFloat())
             .putFloat("max", s.maxSpeedKmh.toFloat()).putLong("idle", s.idleMs)
             .putLong("last_running", lastRunningMs)
+            .putString("gear_ratios", gears.learned.joinToString(",") { "%.2f".format(java.util.Locale.US, it) })
             .apply()
     }
 
@@ -129,16 +142,19 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
         _live.value = LiveDerived(
             kmPerLiter = tenth(FuelModel.kmPerLiter(d, now)),
             litersPerHour = tenth(FuelModel.litersPerHour(d, now)),
-            gear = GearEstimator.estimate(d[Pids.RPM].freshAt(now)?.value, d[Pids.SPEED].freshAt(now)?.value),
-            alerts = VehicleAlerts.evaluate(d, diagnostics.value, now),
+            gear = gears.update(d[Pids.RPM].freshAt(now)?.value, d[Pids.SPEED].freshAt(now)?.value, now),
+            alerts = alertFilter.update(VehicleAlerts.evaluate(d, diagnostics.value, now), now),
         )
     }
 
     /** Empezar un viaje nuevo (botón "Reiniciar"). */
     fun resetTrip() {
-        trip.reset()
-        _tripStats.value = trip.stats
-        saveTrip(trip.stats)
+        // En el mismo hilo que los cálculos, para no reiniciar el viaje a media suma.
+        scope.launch(calc) {
+            trip.reset()
+            _tripStats.value = trip.stats
+            saveTrip(trip.stats)
+        }
     }
 
     /**
@@ -163,7 +179,8 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
             addAction(Intent.ACTION_SCREEN_OFF)
         }
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
-        scope.launch { data.collect { onData(it) } }
+        // Los cálculos (viaje, consumo, marcha, avisos) van fuera del hilo de la pantalla.
+        scope.launch(calc) { data.collect { onData(it) } }
     }
 
     private fun loadConfig(): ObdConfig {
@@ -197,9 +214,13 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
             engine.value?.stop()
             return
         }
-        val e = engine.value ?: ObdEngine(transportFactory = { transportFor(c) }, scope = scope).also { engine.value = it }
+        // El ciclo del OBD (decenas de preguntas y respuestas por segundo) corre en su propio hilo:
+        // la pantalla solo recibe los resultados.
+        val e = engine.value ?: ObdEngine(transportFactory = { transportFor(c) }, scope = engineScope).also { engine.value = it }
         e.start()
     }
+
+    private val engineScope = CoroutineScope(scope.coroutineContext + Dispatchers.Default)
 
     private fun transportFor(c: ObdConfig): ObdTransport = when (c.mode) {
         ObdMode.BLUETOOTH -> BluetoothSppTransport(context, c.address ?: error("Falta el adaptador"))

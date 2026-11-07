@@ -77,7 +77,7 @@ fun rememberStreet(gps: GpsSpeed): String? {
     val lon = gps.lon
     val key = if (lat != null && lon != null) Math.round(lat * 5_000) to Math.round(lon * 5_000) else null
     LaunchedEffect(key) {
-        if (lat != null && lon != null) street = repo.streetAt(lat, lon)
+        if (lat != null && lon != null) street = repo.streetAt(lat, lon, gps.bearing)
     }
     return street
 }
