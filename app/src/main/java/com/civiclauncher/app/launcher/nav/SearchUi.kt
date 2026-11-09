@@ -74,7 +74,11 @@ fun SearchPanel(
 ) {
     val c = LocalContext.current.container
     val index = c.nav.search
-    LaunchedEffect(Unit) { index.prepare(near) }
+    // El índice se carga en la memoria solo mientras buscas (y un par de minutos después).
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        index.prepare(near)
+        onDispose { index.release() }
+    }
     val indexState by index.state.collectAsStateWithLifecycle()
     val home by c.nav.home.collectAsStateWithLifecycle()
     val work by c.nav.work.collectAsStateWithLifecycle()
@@ -102,7 +106,7 @@ fun SearchPanel(
         ) {
             QueryField(query, onClose)
             Spacer(Modifier.height(10.dp))
-            if (indexState == IndexState.Loading || (indexState == IndexState.Empty && query.length >= 2)) {
+            if (indexState == IndexState.Loading || (indexState !is IndexState.Building && !index.loaded && query.length >= 2)) {
                 Text("Cargando la búsqueda…", style = Civic.type.caption, color = Civic.colors.textDim)
                 Spacer(Modifier.height(10.dp))
             }
@@ -123,7 +127,7 @@ fun SearchPanel(
                         val (d, u) = formatDistance(h.meters)
                         ResultRow(if (h.kind == "Calle") P.NavigationArrow else P.MapPin, h.name, "${h.kind} · $d $u") { onPick(Place(h.name, h.point)) }
                     }
-                    if (hits.isEmpty() && indexState is IndexState.Ready) {
+                    if (hits.isEmpty() && indexState is IndexState.Ready && index.loaded) {
                         item { Text("Sin resultados cerca. Prueba con otra palabra.", style = Civic.type.bodySmall, color = Civic.colors.textDim, modifier = Modifier.padding(8.dp)) }
                     }
                 }

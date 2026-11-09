@@ -78,7 +78,9 @@ class RouteEngine(private val context: Context) {
             val profile = ensureProfiles()
             val rc = RoutingContext().apply {
                 localFunction = profile.path
-                memoryclass = (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).memoryClass
+                // Tope de la caché de BRouter (en MB). Con el límite completo de la app podía comerse
+                // toda la memoria junto con el mapa; un tercio alcanza para rutas de ciudad y carretera.
+                memoryclass = ((context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).memoryClass / 3).coerceIn(16, 48)
                 turnInstructionMode = 1
                 if (heading != null) {
                     startDirection = Math.round(heading)

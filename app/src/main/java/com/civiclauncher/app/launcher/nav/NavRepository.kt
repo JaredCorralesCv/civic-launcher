@@ -147,6 +147,8 @@ class NavRepository(
             val from = (_state.value as? NavState.Navigating)?.progress?.position ?: currentPosition()
             val route = from?.let { runCatching { engine.route(it, dest.point, gps.speed.value.bearing) }.getOrNull() }
             redirecting = false
+            // Este trabajo ya terminó: que drive() no se cancele a sí mismo al limpiar.
+            redirectJob = null
             if (route == null) {
                 preview(dest)
                 return@launch

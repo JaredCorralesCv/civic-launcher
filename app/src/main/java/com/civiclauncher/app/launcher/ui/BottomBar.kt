@@ -142,7 +142,7 @@ private fun NavPill(icon: ImageVector, selectedIcon: ImageVector, label: String,
  * actualiza solo.
  */
 @Composable
-private fun VolumeCapsule(modifier: Modifier) {
+internal fun VolumeCapsule(modifier: Modifier, height: androidx.compose.ui.unit.Dp = 66.dp) {
     val ctx = LocalContext.current
     val am = remember { ctx.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager }
     val max = remember { am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC).coerceAtLeast(1) }
@@ -169,20 +169,20 @@ private fun VolumeCapsule(modifier: Modifier) {
     val shape = RoundedCornerShape(50)
     Row(
         modifier
-            .height(66.dp)
+            .height(height)
             .clip(shape)
             .background(c.surface)
             .bevelBorder(shape),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        VolumeButton(P.CaretLeft, "Bajar volumen") { change(android.media.AudioManager.ADJUST_LOWER) }
+        VolumeButton(P.CaretLeft, "Bajar volumen", height) { change(android.media.AudioManager.ADJUST_LOWER) }
         Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(P.SpeakerHighFill, null, tint = c.textDim, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(
                     level.toString(),
-                    style = Civic.type.title.copy(fontSize = 26.sp, fontFeatureSettings = "tnum"),
+                    style = Civic.type.title.copy(fontSize = if (height < 60.dp) 21.sp else 26.sp, fontFeatureSettings = "tnum"),
                     color = c.text,
                 )
             }
@@ -191,17 +191,17 @@ private fun VolumeCapsule(modifier: Modifier) {
                 Box(Modifier.fillMaxWidth(level.toFloat() / max).height(3.dp).clip(RoundedCornerShape(50)).background(c.text))
             }
         }
-        VolumeButton(P.CaretRight, "Subir volumen") { change(android.media.AudioManager.ADJUST_RAISE) }
+        VolumeButton(P.CaretRight, "Subir volumen", height) { change(android.media.AudioManager.ADJUST_RAISE) }
     }
 }
 
 @Composable
-private fun VolumeButton(icon: ImageVector, label: String, onClick: () -> Unit) {
+private fun VolumeButton(icon: ImageVector, label: String, size: androidx.compose.ui.unit.Dp, onClick: () -> Unit) {
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
     Box(
         Modifier
-            .size(66.dp)
+            .size(size)
             .clip(CircleShape)
             .background(if (pressed) Civic.colors.surfacePressed else Color.Transparent)
             .clickable(source, indication = null, role = Role.Button, onClickLabel = label, onClick = onClick),

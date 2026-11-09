@@ -17,8 +17,8 @@ android {
         // Tu pantalla tiene Android 8.1 (API 27). Dejamos 24 por margen; las librerías piden 23 o más.
         minSdk = 24
         targetSdk = 36
-        versionCode = 23
-        versionName = "0.8.0"
+        versionCode = 24
+        versionName = "0.8.1"
     }
 
     // Firma propia: el actualizador solo puede instalar versiones firmadas con la MISMA llave.

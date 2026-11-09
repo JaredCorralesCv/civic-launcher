@@ -150,7 +150,10 @@ fun LauncherRoot(homePresses: Flow<Unit>) {
 @Composable
 private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
     val prefs = LocalContext.current.container.launcherPrefs
-    val autoHide by prefs.autoHideBar.collectAsStateWithLifecycle()
+    val autoHidePref by prefs.autoHideBar.collectAsStateWithLifecycle()
+    // En el estilo Sport la barra (con los controles de la música) se queda siempre a la vista.
+    val sport = prefs.homeStyle.collectAsStateWithLifecycle().value == com.civiclauncher.app.launcher.data.HomeStyle.SPORT
+    val autoHide = autoHidePref && !sport
     var barVisible by remember { mutableStateOf(true) }
     // Los toques van por un canal, no por un estado: así tocar la pantalla ya no vuelve a componer
     // toda la pantalla (solo reinicia la cuenta regresiva).
@@ -237,12 +240,15 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
                 enter = androidx.compose.animation.slideInVertically(androidx.compose.animation.core.tween(220)) { it },
                 exit = androidx.compose.animation.slideOutVertically(androidx.compose.animation.core.tween(220)) { it },
             ) {
-                BottomBar(dest, go)
+                if (sport) SportBottomBar(dest, go) else BottomBar(dest, go)
             }
         }
         if (!barVisible && autoHide) {
             BarHandle(Modifier.align(Alignment.BottomCenter)) { barVisible = true }
         }
+        // Salvapantallas (lo inicia su widget de Inicio Sport): encima de todo, incluida la barra.
+        val saver by SportLayout.screensaver.collectAsStateWithLifecycle()
+        if (saver) Screensaver { SportLayout.screensaver.value = false }
     }
 }
 

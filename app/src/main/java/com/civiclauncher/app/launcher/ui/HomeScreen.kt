@@ -75,6 +75,11 @@ import java.util.Locale
  */
 @Composable
 fun HomeScreen(onOpen: (Dest) -> Unit) {
+    val style by LocalContext.current.container.launcherPrefs.homeStyle.collectAsStateWithLifecycle()
+    if (style == com.civiclauncher.app.launcher.data.HomeStyle.SPORT) {
+        SportHome(onOpen)
+        return
+    }
     // Distribución inspirada en el Inicio de CarPlay (iOS 27): riel a la izquierda con la hora y
     // accesos; a la derecha el mapa, la música y una columna con dos tarjetas chicas.
     // Un solo bloque: riel y tarjetas comparten borde de arriba y de abajo (sin franja vacía arriba).
@@ -221,7 +226,7 @@ private fun TopIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, label
  * el estado y, abajo, la calle actual. Un toque abre el mapa completo.
  */
 @Composable
-private fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
+internal fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
     val c = LocalContext.current.container
     val status by c.map.status.collectAsStateWithLifecycle()
     val gpsState = c.gps.speed.collectAsStateWithLifecycle()
@@ -254,7 +259,7 @@ private fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
         if (haveFix) {
             kotlinx.coroutines.delay(60_000)
             val g = c.gps.speed.value
-            if (g.lat != null && g.lon != null) c.nav.search.prepare(org.mapsforge.core.model.LatLong(g.lat, g.lon))
+            if (g.lat != null && g.lon != null) c.nav.search.prebuild(org.mapsforge.core.model.LatLong(g.lat, g.lon))
         }
     }
 

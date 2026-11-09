@@ -112,6 +112,24 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
                             }
                         }
                     }
+                    item {
+                        val style by c.launcherPrefs.homeStyle.collectAsStateWithLifecycle()
+                        CivicCard(Modifier.fillMaxWidth()) {
+                            Text("Estilo de Inicio", style = Civic.type.label, color = Civic.colors.text)
+                            Text(style.description, style = Civic.type.bodySmall, color = Civic.colors.textDim)
+                            Spacer(Modifier.size(Civic.space.m))
+                            Row(horizontalArrangement = Arrangement.spacedBy(Civic.space.m)) {
+                                com.civiclauncher.app.launcher.data.HomeStyle.entries.forEach { s ->
+                                    CivicButton(
+                                        s.label,
+                                        { c.launcherPrefs.setHomeStyle(s) },
+                                        kind = if (s == style) ButtonKind.Primary else ButtonKind.Secondary,
+                                        icon = if (s == com.civiclauncher.app.launcher.data.HomeStyle.SPORT) P.Gauge else P.House,
+                                    )
+                                }
+                            }
+                        }
+                    }
                     item { WallpaperPicker() }
                     item {
                         val autoHide by c.launcherPrefs.autoHideBar.collectAsStateWithLifecycle()
@@ -130,6 +148,11 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
                     item { PlacesSettings() }
                 }
                 SettingsSection.MUSIC -> {
+                    item {
+                        SettingRow(P.BluetoothLight, "Bluetooth del celular", "Conectar el teléfono, llamadas y contactos (app de la pantalla)") {
+                            openVendor(VendorApps.BLUETOOTH, "Bluetooth")
+                        }
+                    }
                     item {
                         var autoplay by remember { mutableStateOf(c.launcherPrefs.autoplayBluetooth) }
                         SettingRow(
@@ -262,8 +285,8 @@ private fun RoutingSettings() {
     val indexState by c.nav.search.state.collectAsStateWithLifecycle()
     var tiles by remember { mutableStateOf(c.nav.installedTiles()) }
     LaunchedEffect(download) { tiles = c.nav.installedTiles() }
-    // Carga el índice de búsqueda ya guardado (si lo hay) para decir su estado real.
-    LaunchedEffect(Unit) { c.map.lastPosition()?.let { c.nav.search.prepare(it) } }
+    // Lee el estado del índice de búsqueda guardado (sin cargarlo en la memoria).
+    LaunchedEffect(Unit) { c.map.lastPosition()?.let { c.nav.search.prebuild(it) } }
     var confirmDelete by remember { mutableStateOf(false) }
     CivicCard(Modifier.fillMaxWidth()) {
         Text("Rutas sin internet", style = Civic.type.label, color = Civic.colors.text)

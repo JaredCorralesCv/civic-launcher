@@ -359,11 +359,8 @@ fun VehicleSummaryCard(modifier: Modifier, onClick: () -> Unit) {
  */
 @Composable
 private fun RpmArc(rpm: Float?, modifier: Modifier) {
-    val fraction by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = ((rpm ?: 0f) / RPM_MAX).coerceIn(0f, 1f),
-        animationSpec = androidx.compose.animation.core.tween(400, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-        label = "rpm",
-    )
+    // Cambios chicos de golpe (un cuadro), saltos grandes animados.
+    val fraction by gaugeFraction(rpm, RPM_MAX, live = true)
     val dark = Civic.colors.isDark
     val ink = if (dark) Color.White else Color(0xFF15181D)
     val minor = ink.copy(alpha = 0.22f)

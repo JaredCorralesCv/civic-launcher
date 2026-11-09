@@ -41,28 +41,81 @@ sealed interface IndexState {
  * del lugar o de la calle.
  */
 class SearchIndex(private val map: MapRepository, private val scope: CoroutineScope) {
-    private class Entry(val name: String, val norm: String, val kind: String, val lat: Double, val lon: Double)
+    // Coordenadas en Float (≈1 m de precisión, de sobra) y el tipo compartido: ~96 mil de estos.
+    private class Entry(val name: String, val norm: String, val kind: String, val lat: Float, val lon: Float)
 
     private val _state = MutableStateFlow<IndexState>(IndexState.Empty)
     val state: StateFlow<IndexState> = _state.asStateFlow()
     @Volatile private var entries: List<Entry> = emptyList()
-    private var center: LatLong? = null
+    @Volatile private var center: LatLong? = null
     private var job: Job? = null
+    private var releaseJob: Job? = null
+    /** Cuántas pantallas de búsqueda están abiertas (mientras haya alguna, el índice sigue en memoria). */
+    @Volatile private var users = 0
     private val cache = File(map.dir, "busqueda.tsv")
 
+    /** Si el índice ya está cargado y sirve para buscar (no solo guardado en el disco). */
+    val loaded: Boolean get() = entries.isNotEmpty()
+
     /**
-     * Asegura un índice para la zona de [near] (lo carga del disco o lo arma). Civic lo llama solo
-     * en segundo plano cuando hay mapa y ubicación, para que al buscar ya esté listo.
+     * En segundo plano: deja el índice de la zona de [near] armado EN EL DISCO, sin cargarlo en la
+     * memoria (~20 MB que no hacen falta hasta que buscas). Si ya está, solo lee cuántos lugares tiene.
+     */
+    fun prebuild(near: LatLong) {
+        if (job?.isActive == true) return
+        if (_state.value is IndexState.Ready && center?.let { meters(it, near) < REBUILD_KM * 1_000 } == true) return
+        job = scope.launch(Dispatchers.IO) {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            val head = readHeader()
+            if (head != null && meters(head.first, near) <= REBUILD_KM * 1_000) {
+                center = head.first
+                _state.value = IndexState.Ready(head.second)
+                return@launch
+            }
+            build(near)
+        }
+    }
+
+    /**
+     * Al abrir la búsqueda: carga el índice en la memoria (o lo arma si no hay). Llama a [release]
+     * al cerrarla.
      */
     fun prepare(near: LatLong) {
+        users++
+        releaseJob?.cancel()
         val c = center
         if (c != null && meters(c, near) < REBUILD_KM * 1_000 && entries.isNotEmpty()) return
-        if (job?.isActive == true) return
+        if (job?.isActive == true) {
+            // Se está armando en segundo plano: que al terminar se quede en memoria (users > 0).
+            if (_state.value is IndexState.Building) return
+            job?.cancel()
+        }
         job = scope.launch(Dispatchers.IO) {
             // Prioridad baja: que armar el índice no le quite procesador a la música ni al mapa.
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             if (loadCache(near)) return@launch
             build(near)
+        }
+    }
+
+    /**
+     * Se cerró la búsqueda: el índice sale de la memoria 2 minutos después (por si vuelves a buscar
+     * enseguida), si no se abrió otra vez.
+     */
+    fun release() {
+        users = (users - 1).coerceAtLeast(0)
+        releaseJob?.cancel()
+        releaseJob = scope.launch {
+            kotlinx.coroutines.delay(RELEASE_MS)
+            if (users == 0) entries = emptyList()
+        }
+    }
+
+    /** Android pide memoria: si nadie está buscando, el índice sale ya (sigue en el disco). */
+    fun trim() {
+        if (users == 0) {
+            releaseJob?.cancel()
+            entries = emptyList()
         }
     }
 
@@ -73,10 +126,11 @@ class SearchIndex(private val map: MapRepository, private val scope: CoroutineSc
         return entries.asSequence()
             .filter { e -> tokens.all { e.norm.contains(it) } }
             .map { e ->
-                val d = meters(near, LatLong(e.lat, e.lon))
+                val p = LatLong(e.lat.toDouble(), e.lon.toDouble())
+                val d = meters(near, p)
                 // Lo que empieza igual que lo que escribiste va primero; luego, lo más cercano.
                 val score = d * (if (e.norm.startsWith(q) || e.norm.contains(" $q")) 0.3 else 1.0)
-                score to SearchHit(e.name, e.kind, LatLong(e.lat, e.lon), d)
+                score to SearchHit(e.name, e.kind, p, d)
             }
             .sortedBy { it.first }
             .take(limit)
@@ -123,46 +177,66 @@ class SearchIndex(private val map: MapRepository, private val scope: CoroutineSc
                     add(out, seen, name, kindOf(tags), p.latitude, p.longitude, cell)
                 }
                 if (i % 25 == 24) {
-                    entries = ArrayList(out)
+                    // Resultados parciales solo si alguien está buscando ahora mismo.
+                    if (users > 0) entries = ArrayList(out)
                     _state.value = IndexState.Building((i + 1).toFloat() / tiles.size)
                 }
             }
         } finally {
             runCatching { mf.close() }
         }
-        entries = out
         center = near
-        _state.value = IndexState.Ready(out.size)
         saveCache(near, out)
+        // Si nadie está buscando (se armó en segundo plano), no se queda en la memoria: ya está en el disco.
+        entries = if (users > 0) out else emptyList()
+        _state.value = IndexState.Ready(out.size)
     }
 
     private fun add(out: MutableList<Entry>, seen: MutableSet<String>, name: String, kind: String, lat: Double, lon: Double, cellM: Double) {
         val norm = normalize(name)
         val cellDeg = cellM / 111_000.0
         val key = "$norm|$kind|${(lat / cellDeg).toLong()}|${(lon / cellDeg).toLong()}"
-        if (seen.add(key)) out += Entry(name, norm, kind, lat, lon)
+        if (seen.add(key)) out += Entry(name, norm, kind, lat.toFloat(), lon.toFloat())
     }
 
+    /**
+     * Formato: primera línea "lat, lon, cuántos"; luego "nombre, tipo, lat, lon, nombre normalizado"
+     * (guardar el normalizado ahorra calcularlo al cargar, que era lo más lento).
+     */
     private fun saveCache(near: LatLong, list: List<Entry>) = runCatching {
         cache.bufferedWriter().use { w ->
-            w.write("${near.latitude}\t${near.longitude}\n")
-            for (e in list) w.write("${e.name.replace('\t', ' ')}\t${e.kind}\t${e.lat}\t${e.lon}\n")
+            w.write("${near.latitude}\t${near.longitude}\t${list.size}\n")
+            for (e in list) w.write("${e.name.replace('\t', ' ')}\t${e.kind}\t${e.lat}\t${e.lon}\t${e.norm}\n")
         }
     }
 
+    /** Solo la primera línea del índice guardado: dónde está centrado y cuántos lugares tiene. */
+    private fun readHeader(): Pair<LatLong, Int>? = runCatching {
+        if (!cache.exists()) return null
+        val head = cache.bufferedReader().use { it.readLine() }?.split('\t') ?: return null
+        // Índices viejos (sin el normalizado guardado): se rearman una vez.
+        if (head.size < 3) return null
+        LatLong(head[0].toDouble(), head[1].toDouble()) to head[2].toInt()
+    }.getOrNull()
+
     private fun loadCache(near: LatLong): Boolean = runCatching {
-        if (!cache.exists()) return false
+        val head = readHeader() ?: return false
+        if (meters(head.first, near) > REBUILD_KM * 1_000) return false
         _state.value = IndexState.Loading
-        val lines = cache.readLines()
-        val head = lines.firstOrNull()?.split('\t') ?: return false
-        val c = LatLong(head[0].toDouble(), head[1].toDouble())
-        if (meters(c, near) > REBUILD_KM * 1_000) return false
-        entries = lines.drop(1).mapNotNull { l ->
-            val p = l.split('\t')
-            if (p.size < 4) null else Entry(p[0], normalize(p[0]), p[1], p[2].toDouble(), p[3].toDouble())
+        // Línea por línea: leer el archivo entero de golpe (6 MB) duplicaba la memoria un rato.
+        val kinds = HashMap<String, String>()
+        val list = ArrayList<Entry>(head.second)
+        cache.bufferedReader().useLines { lines ->
+            lines.drop(1).forEach { l ->
+                val p = l.split('\t')
+                if (p.size >= 5) {
+                    list += Entry(p[0], p[4], kinds.getOrPut(p[1]) { p[1] }, p[2].toFloat(), p[3].toFloat())
+                }
+            }
         }
-        center = c
-        _state.value = IndexState.Ready(entries.size)
+        entries = list
+        center = head.first
+        _state.value = IndexState.Ready(list.size)
         true
     }.getOrDefault(false).also { if (!it && _state.value == IndexState.Loading) _state.value = IndexState.Empty }
 
@@ -174,6 +248,9 @@ class SearchIndex(private val map: MapRepository, private val scope: CoroutineSc
         val USEFUL = listOf("highway", "amenity", "shop", "tourism", "leisure", "building", "place", "public_transport")
         /** Si te alejas más que esto del centro del índice, se arma uno nuevo. */
         const val REBUILD_KM = 15.0
+
+        /** Cuánto se queda el índice en memoria después de cerrar la búsqueda. */
+        const val RELEASE_MS = 120_000L
 
         val KINDS = mapOf(
             "fuel" to "Gasolinera", "hospital" to "Hospital", "clinic" to "Clínica", "pharmacy" to "Farmacia",

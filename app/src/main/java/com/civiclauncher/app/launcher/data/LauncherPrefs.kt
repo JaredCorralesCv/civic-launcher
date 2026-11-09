@@ -11,6 +11,12 @@ enum class ThemeMode(val label: String) {
     DAY("Día"),
 }
 
+/** Cómo se ve Inicio. */
+enum class HomeStyle(val label: String, val description: String) {
+    ORIGINAL("Original", "Mapa grande, música y vehículo en tarjetas"),
+    SPORT("Sport", "Tablero deportivo: tacómetro, viaje y el carro al centro"),
+}
+
 /** Ajustes del launcher. Cada valor es un flujo: la interfaz se actualiza sola al cambiarlo. */
 class LauncherPrefs(context: Context) {
     private val sp = context.getSharedPreferences("launcher", Context.MODE_PRIVATE)
@@ -23,6 +29,39 @@ class LauncherPrefs(context: Context) {
     fun setThemeMode(mode: ThemeMode) {
         _themeMode.value = mode
         sp.edit().putString("theme", mode.name).apply()
+    }
+
+    private val _homeStyle = MutableStateFlow(
+        runCatching { HomeStyle.valueOf(sp.getString("home_style", null) ?: "") }.getOrDefault(HomeStyle.ORIGINAL),
+    )
+    val homeStyle: StateFlow<HomeStyle> = _homeStyle.asStateFlow()
+
+    fun setHomeStyle(style: HomeStyle) {
+        _homeStyle.value = style
+        sp.edit().putString("home_style", style.name).apply()
+    }
+
+    private val _sportSlots = MutableStateFlow(
+        sp.getString("sport_slots", null).orEmpty().split(',').mapNotNull { e ->
+            e.split('=').takeIf { it.size == 2 }?.let { it[0] to it[1] }
+        }.toMap(),
+    )
+    /** Inicio Sport: qué widget va en cada lugar (lugar → widget). Lo que falta usa el de fábrica. */
+    val sportSlots: StateFlow<Map<String, String>> = _sportSlots.asStateFlow()
+
+    fun setSportSlots(slots: Map<String, String>) {
+        _sportSlots.value = slots
+        // commit (no apply): se escribe en el momento; al quitar la llave la pantalla se apaga de golpe.
+        sp.edit().putString("sport_slots", slots.entries.joinToString(",") { "${it.key}=${it.value}" }).commit()
+    }
+
+    private val _sportArrangement = MutableStateFlow(sp.getString("sport_arrangement", "grid") ?: "grid")
+    /** Inicio Sport: diseño elegido ("grid" cuadrícula, "map" mapa grande). */
+    val sportArrangement: StateFlow<String> = _sportArrangement.asStateFlow()
+
+    fun setSportArrangement(id: String) {
+        _sportArrangement.value = id
+        sp.edit().putString("sport_arrangement", id).commit()
     }
 
     private val _githubRepo = MutableStateFlow(sp.getString("github_repo", "").orEmpty())
@@ -57,6 +96,20 @@ class LauncherPrefs(context: Context) {
     var autoplayBluetooth: Boolean
         get() = sp.getBoolean("autoplay_bt", true)
         set(v) = sp.edit().putBoolean("autoplay_bt", v).apply()
+
+    private val _accelTimer = MutableStateFlow(sp.getBoolean("accel_timer", false))
+    /** Desempeño: medir de 0 a 100 al arrancar desde parado (apagado de fábrica). */
+    val accelTimer: StateFlow<Boolean> = _accelTimer.asStateFlow()
+
+    fun setAccelTimer(on: Boolean) {
+        _accelTimer.value = on
+        sp.edit().putBoolean("accel_timer", on).commit()
+    }
+
+    /** Mejor tiempo de 0 a 100 km/h en milisegundos (0 = todavía no hay). */
+    var best0to100Ms: Long
+        get() = sp.getLong("best_0_100_ms", 0L)
+        set(v) { sp.edit().putLong("best_0_100_ms", v).commit() }
 
     /** Ya pedimos el permiso de ubicación una vez; no insistir en cada arranque. */
     var askedLocation: Boolean

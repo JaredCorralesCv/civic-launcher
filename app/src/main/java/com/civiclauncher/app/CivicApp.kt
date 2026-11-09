@@ -42,6 +42,20 @@ class CivicApp : Application() {
                 .onFailure { container.accLog.log("No se pudo reanudar el monitor: ${it.message}") }
         }
     }
+
+    /**
+     * Android avisa que le falta memoria. Con Civic detrás de otra app (AutoKit, Maps, la radio) se
+     * suelta lo que se puede rehacer: los mosaicos del mapa en memoria y el índice de búsqueda. Si no
+     * soltamos nada, Android cierra Civic entero y regresar a Inicio tarda como un arranque.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // Solo con Civic fuera de la vista: si se soltaran los mosaicos del mapa mientras se ve, el mapa
+        // parpadearía (y podría dibujar una imagen ya liberada).
+        if (level >= TRIM_MEMORY_UI_HIDDEN) {
+            container.trimMemory()
+        }
+    }
 }
 
 /**
@@ -65,7 +79,8 @@ class AppContainer(context: Context) {
 
     val map by lazy { com.civiclauncher.app.launcher.map.MapRepository(context, appScope) }
     /** Navegación sin Android Auto ni internet (rutas con BRouter). */
-    val nav by lazy { com.civiclauncher.app.launcher.nav.NavRepository(context, appScope, gps, map) }
+    private val navLazy = lazy { com.civiclauncher.app.launcher.nav.NavRepository(context, appScope, gps, map) }
+    val nav by navLazy
     val wallpapers by lazy { com.civiclauncher.app.launcher.data.WallpaperRepository(context, appScope) }
     val carPhoto by lazy { com.civiclauncher.app.launcher.data.CarPhotoRepository(context, appScope) }
 
@@ -82,6 +97,12 @@ class AppContainer(context: Context) {
     val diagStore by lazy { DiagStore(context) }
     val accLog by lazy { AccLog(context) }
     val overlayProbe by lazy { OverlayProbe(context, diagStore) }
+
+    /** Suelta lo que se puede rehacer (sin crear nada que todavía no exista). */
+    fun trimMemory() {
+        com.civiclauncher.app.launcher.map.MapMemory.trim()
+        if (navLazy.isInitialized()) nav.search.trim()
+    }
 }
 
 val Context.container: AppContainer

@@ -120,7 +120,10 @@ private fun MapViewHost(
                 // Al girar con el rumbo, las esquinas de la vista salen del área dibujada: un búfer cuadrado
                 // y 1.5 veces más grande cubre la vista girada a cualquier ángulo.
                 model.frameBufferModel.overdrawFactor = 1.5
-                val cache = AndroidUtil.createTileCache(ctx, cacheName, model.displayModel.tileSize, 1f, CACHE_OVERDRAW)
+                // La tarjeta de Inicio ocupa ~la mitad de la pantalla: su caché en memoria se calcula para
+                // esa parte (antes guardaba mosaicos como si fuera el mapa completo).
+                val cache = AndroidUtil.createTileCache(ctx, cacheName, model.displayModel.tileSize, if (interactive) 1f else CARD_SCREEN_RATIO, CACHE_OVERDRAW)
+                MapMemory.register(cache)
                 val store = MapFile(file, "es")
                 // Nombres de calles en su propia capa (no dentro de los mosaicos): así, al girar el mapa
                 // con el rumbo, el texto se acomoda para leerse derecho en vez de quedar de cabeza.
@@ -195,6 +198,7 @@ private fun MapViewHost(
         },
         onRelease = { mv ->
             handle?.view = null
+            mv.layerManager.layers.filterIsInstance<org.mapsforge.map.layer.renderer.TileRendererLayer>().forEach { MapMemory.unregister(it.tileCache) }
             mv.destroyAll()
             (mv.tag as? MapFile)?.close()
             AndroidGraphicFactory.clearResourceMemoryCache()
@@ -330,6 +334,24 @@ private fun aheadOf(p: LatLong, headingDeg: Float, px: Float, zoom: Byte, tileSi
  * quedan huecos oscuros que nunca se llenan.
  */
 private const val CACHE_OVERDRAW = 2.5
+
+/** Parte de la pantalla que ocupa la tarjeta del mapa en Inicio. */
+private const val CARD_SCREEN_RATIO = 0.5f
+
+/**
+ * Los mosaicos del mapa guardados en la memoria (los del disco se quedan). Cuando Civic queda detrás
+ * de otra app (AutoKit, Maps), Android pide memoria: se sueltan y al volver se leen del disco.
+ */
+object MapMemory {
+    private val caches = java.util.Collections.newSetFromMap(java.util.WeakHashMap<org.mapsforge.map.layer.cache.TileCache, Boolean>())
+
+    @Synchronized fun register(c: org.mapsforge.map.layer.cache.TileCache) { caches += c }
+    @Synchronized fun unregister(c: org.mapsforge.map.layer.cache.TileCache) { caches -= c }
+
+    @Synchronized fun trim() {
+        for (c in caches) runCatching { ((c as? org.mapsforge.map.layer.cache.TwoLevelTileCache)?.firstLevelTileCache ?: return@runCatching).purge() }
+    }
+}
 
 /** ~5 m: menos que lo que avanza el carro en un segundo a 20 km/h, más que el temblor del GPS. */
 private const val MIN_MOVE_DEG = 0.00005

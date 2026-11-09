@@ -73,8 +73,11 @@ fun Gauge(
     val animated = remember { Animatable(min) }
     LaunchedEffect(Unit) {
         // Los datos del OBD llegan a saltos (≈5 por segundo); se interpolan para que la banda se mueva suave.
+        // Cambios chicos (menos del 3 % de la escala) van de golpe, en un solo cuadro: si no, con el OBD
+        // mandando datos sin parar la animación nunca terminaba (medido: ~60 cuadros por segundo).
         snapshotFlow { value().coerceIn(min, max) }.collectLatest { target ->
-            animated.animateTo(target, tween(durationMillis = 300, easing = FastOutSlowInEasing))
+            if (kotlin.math.abs(target - animated.value) < (max - min) * 0.03f) animated.snapTo(target)
+            else animated.animateTo(target, tween(durationMillis = 300, easing = FastOutSlowInEasing))
         }
     }
     val ink = if (c.isDark) Color.White else Color(0xFF15181D)
