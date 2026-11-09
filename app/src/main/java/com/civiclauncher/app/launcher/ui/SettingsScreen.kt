@@ -1,5 +1,10 @@
 package com.civiclauncher.app.launcher.ui
 
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.unit.sp
+import com.civiclauncher.app.ui.design.bevelBorder
 import android.content.Intent
 import android.provider.Settings
 import android.widget.Toast
@@ -68,146 +73,266 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
         if (!c.apps.launchPackage(pkg)) Toast.makeText(ctx, "$name no está instalada", Toast.LENGTH_SHORT).show()
     }
 
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = PAGE_GUTTER, vertical = Civic.space.m),
-        verticalArrangement = Arrangement.spacedBy(Civic.space.s),
-    ) {
-        item { Text("Ajustes", style = Civic.type.headline, color = Civic.colors.text) }
+    var section by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(SettingsSection.APPEARANCE) }
 
-        item { SectionHeader("Apariencia") }
-        item {
-            CivicCard(Modifier.fillMaxWidth()) {
-                Text("Tema", style = Civic.type.label, color = Civic.colors.text)
-                Text(
-                    "Automático: noche de 19:00 a 7:00, día el resto del tiempo.",
-                    style = Civic.type.bodySmall,
-                    color = Civic.colors.textDim,
-                )
-                Spacer(Modifier.size(Civic.space.m))
-                Row(horizontalArrangement = Arrangement.spacedBy(Civic.space.m)) {
-                    ThemeMode.entries.forEach { mode ->
-                        CivicButton(
-                            mode.label,
-                            { c.launcherPrefs.setThemeMode(mode) },
-                            kind = if (mode == theme) ButtonKind.Primary else ButtonKind.Secondary,
-                            icon = when (mode) {
-                                ThemeMode.AUTO -> P.Clock
-                                ThemeMode.NIGHT -> P.Moon
-                                ThemeMode.DAY -> P.Sun
+    // Como los ajustes de los autos: categorías a la izquierda y su contenido a la derecha, sin tener
+    // que recorrer una lista larguísima manejando.
+    Row(Modifier.fillMaxSize().padding(horizontal = PAGE_GUTTER, vertical = Civic.space.m), horizontalArrangement = Arrangement.spacedBy(Civic.space.l)) {
+        Column(Modifier.width(232.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Civic.space.xs)) {
+            Text("Ajustes", style = Civic.type.headline.copy(fontSize = 28.sp), color = Civic.colors.text, modifier = Modifier.padding(start = 8.dp, bottom = Civic.space.m))
+            SettingsSection.entries.forEach { s ->
+                SectionTab(s, selected = s == section) { section = s }
+            }
+        }
+        LazyColumn(
+            Modifier.weight(1f).fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(Civic.space.s),
+        ) {
+            item { Text(section.title, style = Civic.type.title.copy(fontSize = 22.sp), color = Civic.colors.text, modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = Civic.space.s)) }
+            when (section) {
+                SettingsSection.APPEARANCE -> {
+                    item {
+                        CivicCard(Modifier.fillMaxWidth()) {
+                            Text("Tema", style = Civic.type.label, color = Civic.colors.text)
+                            Text("Automático: noche de 19:00 a 7:00, día el resto del tiempo.", style = Civic.type.bodySmall, color = Civic.colors.textDim)
+                            Spacer(Modifier.size(Civic.space.m))
+                            Row(horizontalArrangement = Arrangement.spacedBy(Civic.space.m)) {
+                                ThemeMode.entries.forEach { mode ->
+                                    CivicButton(
+                                        mode.label,
+                                        { c.launcherPrefs.setThemeMode(mode) },
+                                        kind = if (mode == theme) ButtonKind.Primary else ButtonKind.Secondary,
+                                        icon = when (mode) {
+                                            ThemeMode.AUTO -> P.Clock
+                                            ThemeMode.NIGHT -> P.Moon
+                                            ThemeMode.DAY -> P.Sun
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    item { WallpaperPicker() }
+                    item {
+                        val autoHide by c.launcherPrefs.autoHideBar.collectAsStateWithLifecycle()
+                        SettingRow(
+                            P.SquaresFourLight,
+                            if (autoHide) "Esconder la barra de abajo: sí" else "Esconder la barra de abajo: no",
+                            "Se esconde sola tras 6 s sin tocar la pantalla. Para abrirla, desliza hacia arriba desde el borde de abajo o toca la rayita.",
+                            showChevron = false,
+                        ) { c.launcherPrefs.setAutoHideBar(!autoHide) }
+                    }
+                    item { CarPhotoRow() }
+                }
+                SettingsSection.MAP -> {
+                    item { MapSettings() }
+                    item { RoutingSettings() }
+                    item { PlacesSettings() }
+                }
+                SettingsSection.MUSIC -> {
+                    item {
+                        var autoplay by remember { mutableStateOf(c.launcherPrefs.autoplayBluetooth) }
+                        SettingRow(
+                            P.BluetoothLight,
+                            if (autoplay) "Reproducir al conectar: sí" else "Reproducir al conectar: no",
+                            "Cuando tu celular se conecta por Bluetooth, la música empieza sola. Toca para cambiar.",
+                            showChevron = false,
+                        ) {
+                            autoplay = !autoplay
+                            c.launcherPrefs.autoplayBluetooth = autoplay
+                        }
+                    }
+                    item {
+                        val demo = c.demoMedia
+                        val on by demo.active.collectAsStateWithLifecycle()
+                        SettingRow(
+                            P.MusicNotes,
+                            if (on) "Música de prueba: encendida" else "Música de prueba",
+                            "Canciones inventadas, sin sonido, para ver la tarjeta de música de Inicio sin el celular",
+                            showChevron = false,
+                        ) {
+                            if (on) demo.stop() else demo.start()
+                            c.media.refresh()
+                        }
+                    }
+                }
+                SettingsSection.VEHICLE -> {
+                    item { ObdSettings() }
+                    item { SettingRow(P.SteeringWheel, "Botones del volante", "App del fabricante para aprender los botones (SWC)") { openVendor(VendorApps.STEERING_WHEEL, "SWC") } }
+                    item { SettingRow(P.CarProfile, "Configuraciones del vehículo", "Ajustes del fabricante para el carro") { openVendor(VendorApps.CAR_SETTINGS, "La app") } }
+                    item { SettingRow(P.Cpu, "CAN del vehículo", "Para ver si hay caja decodificadora CAN instalada") { openVendor(VendorApps.CAN, "Can Vehiculo") } }
+                }
+                SettingsSection.SYSTEM -> {
+                    item {
+                        SettingRow(
+                            P.Clock,
+                            "Zona horaria",
+                            if (tz == "Asia/Shanghai") "$tz · la pantalla venía con la hora de China. Cámbiala a la de tu ciudad." else tz,
+                            tone = if (tz == "Asia/Shanghai") Tone.Warn else Tone.Neutral,
+                        ) { open(Intent(Settings.ACTION_DATE_SETTINGS)) }
+                    }
+                    item { SettingRow(P.House, "Launcher predeterminado", "Elige Civic o el launcher del fabricante") { open(Intent(Settings.ACTION_HOME_SETTINGS)) } }
+                    item { SettingRow(P.Wrench, "Limpieza", "Desactiva apps preinstaladas que no usas para liberar memoria") { onOpenCleanup() } }
+                    item { SettingRow(P.WifiHigh, "WiFi", "Para buscar actualizaciones y descargar mapas con el WiFi de tu casa") { open(Intent(Settings.ACTION_WIFI_SETTINGS)) } }
+                    item { SettingRow(P.GearSix, "Ajustes de Android", "Configuración general de la pantalla") { open(Intent(Settings.ACTION_SETTINGS)) } }
+                }
+                SettingsSection.UPDATES -> {
+                    item { UpdateCard() }
+                    item {
+                        val opt by c.optimizer.status.collectAsStateWithLifecycle()
+                        SettingRow(
+                            P.Cpu,
+                            when (opt) {
+                                is com.civiclauncher.app.launcher.AppOptimizer.Status.Done -> "Optimizado para esta pantalla"
+                                com.civiclauncher.app.launcher.AppOptimizer.Status.Running -> "Optimizando… (hasta 2 min)"
+                                is com.civiclauncher.app.launcher.AppOptimizer.Status.Failed -> "Se optimiza solo en unas horas"
+                                com.civiclauncher.app.launcher.AppOptimizer.Status.Idle -> "Optimizar para esta pantalla"
                             },
-                        )
+                            when (opt) {
+                                is com.civiclauncher.app.launcher.AppOptimizer.Status.Done -> "Civic está compilado a código nativo. Se nota al reiniciar Civic. Toca para repetirlo."
+                                // Medido en tu pantalla: su no da root a nadie, pero Android sí optimiza Civic solo en
+                                // su mantenimiento de fondo (corre con la pantalla apagada, más o menos una vez al día).
+                                is com.civiclauncher.app.launcher.AppOptimizer.Status.Failed -> "Tras actualizar, Android optimiza Civic solo en su mantenimiento (aprox. un día). Por la PC se puede hacer al momento."
+                                else -> "Compila Civic a código nativo para que vaya más fluido. Se hace solo una vez por versión."
+                            },
+                            showChevron = false,
+                        ) { c.optimizer.compileNow() }
+                    }
+                }
+                SettingsSection.ABOUT -> {
+                    item { SettingRow(P.Wrench, "Diagnóstico", "Las pruebas de hardware de la Fase 0") { onOpenDiagnostics() } }
+                    item {
+                        SettingRow(
+                            P.Info,
+                            "Civic Launcher ${BuildConfig.VERSION_NAME}",
+                            "Inter (SIL OFL) · Phosphor Icons (MIT) · Mapas y rutas © colaboradores de OpenStreetMap · Mapsforge (LGPL) · BRouter (MIT)",
+                            showChevron = false,
+                        ) { }
                     }
                 }
             }
         }
-
-        item { WallpaperPicker() }
-
-        item {
-            val autoHide by c.launcherPrefs.autoHideBar.collectAsStateWithLifecycle()
-            SettingRow(
-                P.SquaresFourLight,
-                if (autoHide) "Esconder la barra de abajo: sí" else "Esconder la barra de abajo: no",
-                "Se esconde sola tras 6 s sin tocar la pantalla. Para abrirla, desliza hacia arriba desde el borde de abajo o toca la rayita.",
-                showChevron = false,
-            ) { c.launcherPrefs.setAutoHideBar(!autoHide) }
-        }
-
-        item { CarPhotoRow() }
-
-        item { SectionHeader("Música") }
-        item {
-            var autoplay by remember { mutableStateOf(c.launcherPrefs.autoplayBluetooth) }
-            SettingRow(
-                P.BluetoothLight,
-                if (autoplay) "Reproducir al conectar: sí" else "Reproducir al conectar: no",
-                "Cuando tu celular se conecta por Bluetooth, la música empieza sola. Toca para cambiar.",
-                showChevron = false,
-            ) {
-                autoplay = !autoplay
-                c.launcherPrefs.autoplayBluetooth = autoplay
-            }
-        }
-
-        item { SectionHeader("Fecha y hora") }
-        item {
-            SettingRow(
-                P.Clock,
-                "Zona horaria",
-                if (tz == "Asia/Shanghai") "$tz · la pantalla venía con la hora de China. Cámbiala a la de tu ciudad." else tz,
-                tone = if (tz == "Asia/Shanghai") Tone.Warn else Tone.Neutral,
-            ) { open(Intent(Settings.ACTION_DATE_SETTINGS)) }
-        }
-
-        item { SectionHeader("Mapa") }
-        item { MapSettings() }
-
-        item { SectionHeader("OBD") }
-        item { ObdSettings() }
-
-        item { SectionHeader("Carro") }
-        item { SettingRow(P.SteeringWheel, "Botones del volante", "App del fabricante para aprender los botones (SWC)") { openVendor(VendorApps.STEERING_WHEEL, "SWC") } }
-        item { SettingRow(P.CarProfile, "Configuraciones del vehículo", "Ajustes del fabricante para el carro") { openVendor(VendorApps.CAR_SETTINGS, "La app") } }
-        item { SettingRow(P.Cpu, "CAN del vehículo", "Para ver si hay caja decodificadora CAN instalada") { openVendor(VendorApps.CAN, "Can Vehiculo") } }
-
-        item { SectionHeader("Sistema") }
-        item {
-            SettingRow(P.House, "Launcher predeterminado", "Elige Civic o el launcher del fabricante") {
-                open(Intent(Settings.ACTION_HOME_SETTINGS))
-            }
-        }
-        item { SettingRow(P.Wrench, "Limpieza", "Desactiva apps preinstaladas que no usas para liberar memoria") { onOpenCleanup() } }
-        item { SettingRow(P.GearSix, "Ajustes de Android", "Configuración general de la pantalla") { open(Intent(Settings.ACTION_SETTINGS)) } }
-        item { SettingRow(P.WifiHigh, "WiFi", "Para buscar actualizaciones con el WiFi de tu casa") { open(Intent(Settings.ACTION_WIFI_SETTINGS)) } }
-
-        item { SectionHeader("Actualizaciones") }
-        item { UpdateCard() }
-
-        item { SectionHeader("Avanzado") }
-        item {
-            val opt by c.optimizer.status.collectAsStateWithLifecycle()
-            SettingRow(
-                P.Cpu,
-                when (opt) {
-                    is com.civiclauncher.app.launcher.AppOptimizer.Status.Done -> "Optimizado para esta pantalla"
-                    com.civiclauncher.app.launcher.AppOptimizer.Status.Running -> "Optimizando… (hasta 2 min)"
-                    is com.civiclauncher.app.launcher.AppOptimizer.Status.Failed -> "Se optimiza solo en unas horas"
-                    com.civiclauncher.app.launcher.AppOptimizer.Status.Idle -> "Optimizar para esta pantalla"
-                },
-                when (val s = opt) {
-                    is com.civiclauncher.app.launcher.AppOptimizer.Status.Done -> "Civic está compilado a código nativo. Se nota al reiniciar Civic. Toca para repetirlo."
-                    // Medido en tu pantalla: su no da root a nadie, pero Android sí optimiza Civic solo en
-                    // su mantenimiento de fondo (corre con la pantalla apagada, más o menos una vez al día).
-                    is com.civiclauncher.app.launcher.AppOptimizer.Status.Failed -> "Tras actualizar, Android optimiza Civic solo en su mantenimiento (aprox. un día). Por la PC se puede hacer al momento."
-                    else -> "Compila Civic a código nativo para que vaya más fluido. Se hace solo una vez por versión."
-                },
-                showChevron = false,
-            ) { c.optimizer.compileNow() }
-        }
-        item { SettingRow(P.Wrench, "Diagnóstico", "Las pruebas de hardware de la Fase 0") { onOpenDiagnostics() } }
-        item {
-            val demo = c.demoMedia
-            val on by demo.active.collectAsStateWithLifecycle()
-            SettingRow(
-                P.MusicNotes,
-                if (on) "Música de prueba: encendida" else "Música de prueba",
-                "Canciones inventadas, sin sonido, para ver la tarjeta de música de Inicio sin el celular",
-                showChevron = false,
-            ) {
-                if (on) demo.stop() else demo.start()
-                c.media.refresh()
-            }
-        }
-        item {
-            SettingRow(
-                P.Info,
-                "Acerca de",
-                "Civic Launcher ${BuildConfig.VERSION_NAME} · Inter (SIL OFL) · Phosphor Icons (MIT)",
-                showChevron = false,
-            ) { }
-        }
     }
+}
+
+/** Categorías de Ajustes (columna izquierda). */
+private enum class SettingsSection(val title: String, val icon: ImageVector) {
+    APPEARANCE("Apariencia", P.SunFill),
+    MAP("Mapa y rutas", P.MapTrifoldFill),
+    MUSIC("Música", P.MusicNotesFill),
+    VEHICLE("Vehículo", P.CarSimpleFill),
+    SYSTEM("Sistema", P.GearSixFill),
+    UPDATES("Actualizaciones", P.DownloadSimpleFill),
+    ABOUT("Acerca de", P.InfoFill),
+}
+
+/** Una categoría: ícono y nombre; la elegida se resalta como cápsula de vidrio claro. */
+@Composable
+private fun SectionTab(s: SettingsSection, selected: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(50)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .clip(shape)
+            .let { if (selected) it.background(Civic.colors.selected).bevelBorder(shape) else it }
+            .clickable(role = Role.Tab, onClickLabel = s.title, onClick = onClick)
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(s.icon, null, tint = if (selected) Civic.colors.accent else Civic.colors.textDim, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(14.dp))
+        Text(
+            s.title,
+            style = Civic.type.label.copy(fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal),
+            color = if (selected) Civic.colors.text else Civic.colors.textDim,
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * Datos de rutas (para navegar sin internet): qué zonas están descargadas, bajar las de tu región y
+ * el estado de la búsqueda de lugares.
+ */
+@Composable
+private fun RoutingSettings() {
+    val c = LocalContext.current.container
+    val download by c.nav.download.collectAsStateWithLifecycle()
+    val indexState by c.nav.search.state.collectAsStateWithLifecycle()
+    var tiles by remember { mutableStateOf(c.nav.installedTiles()) }
+    LaunchedEffect(download) { tiles = c.nav.installedTiles() }
+    // Carga el índice de búsqueda ya guardado (si lo hay) para decir su estado real.
+    LaunchedEffect(Unit) { c.map.lastPosition()?.let { c.nav.search.prepare(it) } }
+    var confirmDelete by remember { mutableStateOf(false) }
+    CivicCard(Modifier.fillMaxWidth()) {
+        Text("Rutas sin internet", style = Civic.type.label, color = Civic.colors.text)
+        Text(
+            if (tiles.isEmpty()) "Para navegar sin Android Auto hacen falta los datos de rutas de tu zona (una sola vez, por WiFi). Se descargan solos la primera vez que pides una ruta."
+            else "${tiles.size} zona(s) · ${tiles.values.sum()} MB · ${tiles.keys.sorted().joinToString { it.removeSuffix(".rd5").replace('_', ' ') }}",
+            style = Civic.type.bodySmall,
+            color = Civic.colors.textDim,
+        )
+        when (val d = download) {
+            is com.civiclauncher.app.launcher.nav.TilesDownload.Running -> {
+                Spacer(Modifier.size(Civic.space.s))
+                Text("Descargando zona ${d.index + 1} de ${d.count}… ${(d.progress * 100).toInt()} %", style = Civic.type.label, color = Civic.colors.text)
+                Spacer(Modifier.size(Civic.space.xs))
+                LinearMeter(d.progress, Tone.Accent)
+            }
+            is com.civiclauncher.app.launcher.nav.TilesDownload.Failed -> Text(d.message, style = Civic.type.bodySmall, color = Civic.colors.bad)
+            else -> Unit
+        }
+        Spacer(Modifier.size(Civic.space.m))
+        Row(horizontalArrangement = Arrangement.spacedBy(Civic.space.m)) {
+            CivicButton("Descargar mi región", {
+                val p = c.map.lastPosition() ?: com.civiclauncher.app.launcher.map.MEXICO_CENTER
+                c.nav.downloadTiles(com.civiclauncher.app.launcher.nav.RoutingData.regionAround(p))
+            }, icon = P.DownloadSimple, enabled = download !is com.civiclauncher.app.launcher.nav.TilesDownload.Running)
+            if (tiles.isNotEmpty()) CivicButton("Borrar", { confirmDelete = true }, kind = ButtonKind.Secondary)
+        }
+        Spacer(Modifier.size(Civic.space.m))
+        Text(
+            when (val s = indexState) {
+                is com.civiclauncher.app.launcher.nav.IndexState.Ready -> "Búsqueda lista: ${"%,d".format(s.count)} lugares y calles de tu zona."
+                is com.civiclauncher.app.launcher.nav.IndexState.Building -> "Preparando la búsqueda de tu zona… ${(s.progress * 100).toInt()} %"
+                com.civiclauncher.app.launcher.nav.IndexState.Loading -> "Cargando la búsqueda…"
+                com.civiclauncher.app.launcher.nav.IndexState.Empty ->"La búsqueda de lugares se prepara sola en segundo plano cuando hay ubicación."
+            },
+            style = Civic.type.bodySmall,
+            color = Civic.colors.textDim,
+        )
+    }
+    if (confirmDelete) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("¿Borrar los datos de rutas?") },
+            text = { Text("Libera ${tiles.values.sum()} MB. Para navegar otra vez se vuelven a descargar.") },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { c.nav.deleteTiles(); tiles = c.nav.installedTiles(); confirmDelete = false }) { Text("Borrar") } },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { confirmDelete = false }) { Text("Cancelar") } },
+        )
+    }
+}
+
+/** Casa y Trabajo: se ven aquí y se pueden quitar (se guardan desde el mapa). */
+@Composable
+private fun PlacesSettings() {
+    val c = LocalContext.current.container
+    val home by c.nav.home.collectAsStateWithLifecycle()
+    val work by c.nav.work.collectAsStateWithLifecycle()
+    SettingRow(
+        P.HouseFill,
+        "Casa",
+        home?.name ?: "Sin guardar · en el mapa, elige un destino y toca \"Guardar como Casa\"",
+        showChevron = false,
+    ) { if (home != null) c.nav.clearHome() }
+    Spacer(Modifier.size(Civic.space.s))
+    SettingRow(
+        P.MapPinFill,
+        "Trabajo",
+        work?.name ?: "Sin guardar · en el mapa, elige un destino y toca \"Guardar como Trabajo\"",
+        showChevron = false,
+    ) { if (work != null) c.nav.clearWork() }
 }
 
 @Composable

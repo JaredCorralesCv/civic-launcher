@@ -17,3 +17,6 @@ keystore.properties
 
 # Fondos personales (no se publican en GitHub)
 /Wallpapers/
+
+# Respaldos del estado de la pantalla (se generan en la PC)
+/tools/pantalla/respaldos/

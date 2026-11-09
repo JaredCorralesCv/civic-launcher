@@ -64,6 +64,8 @@ class AppContainer(context: Context) {
     val obd by lazy { ObdRepository(context, appScope) }
 
     val map by lazy { com.civiclauncher.app.launcher.map.MapRepository(context, appScope) }
+    /** Navegación sin Android Auto ni internet (rutas con BRouter). */
+    val nav by lazy { com.civiclauncher.app.launcher.nav.NavRepository(context, appScope, gps, map) }
     val wallpapers by lazy { com.civiclauncher.app.launcher.data.WallpaperRepository(context, appScope) }
     val carPhoto by lazy { com.civiclauncher.app.launcher.data.CarPhotoRepository(context, appScope) }
 

@@ -78,10 +78,8 @@ fun MusicScreen(onOpen: (Dest) -> Unit) {
     val now = (state as? MediaState.Active)?.now
 
     PlayerFrame(tint = now?.artColor) {
-        // Arriba: regresar (círculo de vidrio) y, a la derecha, de dónde viene la música.
-        Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
-            BackButton { onOpen(Dest.HOME) }
-            Spacer(Modifier.weight(1f))
+        // Arriba: regresar (círculo de vidrio), la hora al centro y, a la derecha, de dónde viene la música.
+        PlayerTopBar(onBack = { onOpen(Dest.HOME) }) {
             // De dónde viene la música (no se muestra con la música de prueba, que sale de Civic).
             if (now != null && now.pkg != ctx.packageName) {
                 // El nombre de la app se pregunta al sistema una vez por app, no en cada redibujo.
@@ -302,6 +300,32 @@ internal fun PlayerFrame(tint: Color?, content: @Composable androidx.compose.fou
 }
 
 /** Línea de arriba: "REPRODUCIENDO · BLUETOOTH" y, a la derecha, un acceso discreto a la app. */
+/**
+ * Barra de arriba de Música y Radio, como CarPlay: regresar a la izquierda, la hora sola y discreta
+ * al centro (siempre centrada, sin importar lo que haya a los lados) y una acción a la derecha.
+ */
+@Composable
+internal fun PlayerTopBar(onBack: () -> Unit, end: @Composable RowScope.() -> Unit) {
+    Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            BackButton(onBack)
+            Spacer(Modifier.weight(1f))
+            end()
+        }
+        Text(
+            rememberClockText(),
+            style = Civic.type.title.copy(
+                fontSize = 22.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                letterSpacing = (-0.01).em,
+                fontFeatureSettings = "tnum",
+            ),
+            color = Civic.colors.text.copy(alpha = 0.92f),
+            maxLines = 1,
+        )
+    }
+}
+
 @Composable
 internal fun PlayerHeader(text: String, action: String?, onAction: () -> Unit) {
     Row(Modifier.fillMaxWidth().height(40.dp), verticalAlignment = Alignment.CenterVertically) {

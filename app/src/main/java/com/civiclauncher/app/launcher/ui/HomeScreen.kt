@@ -157,15 +157,20 @@ internal val PAGE_GUTTER = 16.dp
 
 @Composable
 private fun RailClock() {
+    Text(rememberClockText(), style = Civic.type.title.copy(fontSize = 20.sp, fontFeatureSettings = "tnum", letterSpacing = (-0.01).em), color = Civic.colors.text)
+}
+
+/** La hora como "9:41" (sin a. m./p. m., como CarPlay), respetando el formato de 24 h si está activo. */
+@Composable
+internal fun rememberClockText(): String {
     val ctx = LocalContext.current
     val now by ctx.container.clock.now.collectAsStateWithLifecycle()
     val is24 = DateFormat.is24HourFormat(ctx)
-    val text = remember(now, is24) {
+    return remember(now, is24) {
         val cal = Calendar.getInstance().apply { timeInMillis = now }
         if (is24) "%d:%02d".format(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
         else "%d:%02d".format(cal.get(Calendar.HOUR).let { if (it == 0) 12 else it }, cal.get(Calendar.MINUTE))
     }
-    Text(text, style = Civic.type.title.copy(fontSize = 20.sp, fontFeatureSettings = "tnum", letterSpacing = (-0.01).em), color = Civic.colors.text)
 }
 
 /** Solo si la pantalla sigue con la hora de China: un aviso que lleva al ajuste. */
@@ -240,21 +245,36 @@ private fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
     val (center, hasFix) = mapCenter(gps, remember { c.map.lastPosition() })
     val street = rememberStreet(gps)
     val shape = RoundedCornerShape(Civic.radii.xl)
+    // Navegando: la tarjeta muestra la ruta y la siguiente vuelta en lugar de la calle actual.
+    val navigating = c.nav.state.collectAsStateWithLifecycle().value as? com.civiclauncher.app.launcher.nav.NavState.Navigating
+    // Con mapa y ubicación, el índice de búsqueda de la zona se arma solo en segundo plano (un minuto
+    // después, para no estorbar al arranque): al buscar un destino ya está listo.
+    val haveFix = gps.fresh && gps.lat != null
+    LaunchedEffect(haveFix) {
+        if (haveFix) {
+            kotlinx.coroutines.delay(60_000)
+            val g = c.gps.speed.value
+            if (g.lat != null && g.lon != null) c.nav.search.prepare(org.mapsforge.core.model.LatLong(g.lat, g.lon))
+        }
+    }
 
     // Las cápsulas encima del mapa van opacas aunque haya fondo: si no, las calles tapan el texto.
     com.civiclauncher.app.ui.design.OpaqueSurfaces { Box(modifier.clip(shape).background(Civic.colors.surface)) {
         CivicMap(
             file = ready.file,
             cacheName = MAP_CACHE_CARD,
-            center = center,
-            bearing = gps.bearing,
-            hasFix = hasFix,
+            center = navigating?.progress?.position ?: center,
+            bearing = navigating?.progress?.bearing ?: gps.bearing,
+            hasFix = hasFix || navigating != null,
             follow = true,
             night = Civic.colors.isDark,
             initialZoom = 16,
             modifier = Modifier.fillMaxSize(),
             interactive = false,
             headingUp = c.launcherPrefs.mapHeadingUp.collectAsStateWithLifecycle().value,
+            route = navigating?.route,
+            routeFrom = navigating?.progress?.segment ?: 0,
+            destination = navigating?.dest?.point,
         )
         // Capa transparente encima del mapa: el toque abre el mapa completo en lugar de moverlo.
         Box(Modifier.fillMaxSize().clickable(onClick = onOpen))
@@ -275,7 +295,14 @@ private fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
             Spacer(Modifier.width(Civic.space.s))
             Dot(if (hasFix) Tone.Ok else Tone.Warn)
         }
-        Row(
+        if (navigating != null) {
+            com.civiclauncher.app.launcher.nav.NavBanner(
+                navigating.progress,
+                navigating.rerouting,
+                Modifier.align(Alignment.BottomCenter).padding(Civic.space.m),
+                compact = true,
+            )
+        } else Row(
             Modifier
                 .align(Alignment.BottomCenter)
                 .padding(Civic.space.m)

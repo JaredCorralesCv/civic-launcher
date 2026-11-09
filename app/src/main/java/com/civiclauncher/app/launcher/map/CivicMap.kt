@@ -32,6 +32,9 @@ class MapHandle {
     fun zoomIn() = view?.model?.mapViewPosition?.zoomIn()
     fun zoomOut() = view?.model?.mapViewPosition?.zoomOut()
     fun zoomLevel(): Int = view?.model?.mapViewPosition?.zoomLevel?.toInt() ?: 0
+    /** El punto que está justo en medio del mapa (donde va el pin al elegir en el mapa). */
+    fun center(): LatLong? = view?.model?.mapViewPosition?.center
+    fun moveTo(p: LatLong) { view?.model?.mapViewPosition?.animateTo(p) }
 }
 
 /**
@@ -59,13 +62,17 @@ fun CivicMap(
     handle: MapHandle? = null,
     onUserMoved: () -> Unit = {},
     headingUp: Boolean = false,
+    route: com.civiclauncher.app.launcher.nav.Route? = null,
+    routeFrom: Int = 0,
+    destination: LatLong? = null,
+    onLongPress: ((LatLong) -> Unit)? = null,
 ) {
     // Si cambia el archivo (borraste y descargaste otro), se crea un mapa nuevo en lugar de reusar el viejo.
     // También se recrea al cambiar de día a noche: cada paleta tiene su propia caché de mosaicos.
     // "-sl": mosaicos sin nombres (los nombres van en su capa); no se mezclan con los viejos de la caché.
     val themedCache = "$cacheName-${if (night) "n" else "d"}-v${MapTheme.VERSION}-sl"
     androidx.compose.runtime.key(file.path, themedCache) {
-        MapViewHost(file, themedCache, center, bearing, hasFix, follow, night, initialZoom, modifier, interactive, handle, onUserMoved, headingUp)
+        MapViewHost(file, themedCache, center, bearing, hasFix, follow, night, initialZoom, modifier, interactive, handle, onUserMoved, headingUp, route, routeFrom, destination, onLongPress)
     }
 }
 
@@ -85,8 +92,14 @@ private fun MapViewHost(
     handle: MapHandle?,
     onUserMoved: () -> Unit,
     headingUp: Boolean,
+    route: com.civiclauncher.app.launcher.nav.Route?,
+    routeFrom: Int,
+    destination: LatLong?,
+    onLongPress: ((LatLong) -> Unit)?,
 ) {
     val position = remember { PositionLayer() }
+    val overlays = remember { RouteOverlays() }
+    val latestOnLongPress = androidx.compose.runtime.rememberUpdatedState(onLongPress)
     // Si la pantalla que lo contiene no se ve (Inicio mientras estás en otra), el mapa se queda
     // abierto pero escondido y sin seguir al GPS: no dibuja ni sube mosaicos a la GPU.
     val active = com.civiclauncher.app.launcher.ui.LocalScreenActive.current
@@ -113,8 +126,25 @@ private fun MapViewHost(
                 // con el rumbo, el texto se acomoda para leerse derecho en vez de quedar de cabeza.
                 val renderer = AndroidUtil.createTileRendererLayer(cache, model.mapViewPosition, store, MapTheme.get(ctx, night), false, false, true)
                 layerManager.layers.add(renderer)
+                // La ruta va debajo de los nombres de las calles (que se sigan leyendo) y del carro.
+                overlays.install(this)
                 layerManager.layers.add(org.mapsforge.map.layer.labels.LabelLayer(AndroidGraphicFactory.INSTANCE, renderer.labelStore))
+                layerManager.layers.add(overlays.destination)
                 layerManager.layers.add(position)
+                if (interactive) {
+                    // Mantener el dedo sobre el mapa = "¿ir aquí?".
+                    layerManager.layers.add(object : Layer() {
+                        override fun draw(boundingBox: BoundingBox, zoomLevel: Byte, canvas: Canvas, topLeftPoint: Point, rotation: Rotation) = Unit
+                        // Mapsforge pide la posición de cada capa antes de pasarle el toque largo; sin una,
+                        // truena. Esta capa no se dibuja, así que cualquier punto sirve.
+                        override fun getPosition(): LatLong = LatLong(0.0, 0.0)
+                        override fun onLongPress(tapLatLong: LatLong, layerXY: Point, tapXY: Point): Boolean {
+                            val cb = latestOnLongPress.value ?: return false
+                            post { cb(tapLatLong) }
+                            return true
+                        }
+                    })
+                }
                 setCenter(center)
                 setZoomLevel(initialZoom.toByte())
                 tag = store
@@ -134,6 +164,7 @@ private fun MapViewHost(
             // La flecha gira de 5 en 5 grados: con el carro parado el rumbo del GPS "tiembla" y cada
             // temblor redibujaba el mapa entero.
             position.set(center, bearing?.let { Math.round(it / 5f) * 5f }, hasFix)
+            overlays.show(route, routeFrom, destination)
             // Rumbo arriba: girar el mapa al revés del rumbo para que "enfrente" quede arriba. Solo con
             // un rumbo válido (el GPS lo da al moverse); detenido, se queda como estaba.
             val wantRotation = when {
@@ -169,6 +200,65 @@ private fun MapViewHost(
             AndroidGraphicFactory.clearResourceMemoryCache()
         },
     )
+}
+
+/**
+ * La ruta (una línea azul con borde oscuro, como en los navegadores) y el destino. Solo se dibuja lo
+ * que falta por recorrer, y solo se actualiza cuando avanzas de tramo (no en cada lectura del GPS).
+ */
+private class RouteOverlays {
+    private val gf = AndroidGraphicFactory.INSTANCE
+    private fun stroke(color: Int, width: Float) = gf.createPaint().apply {
+        setColor(color)
+        setStyle(Style.STROKE)
+        setStrokeWidth(width)
+        setStrokeCap(org.mapsforge.core.graphics.Cap.ROUND)
+        setStrokeJoin(org.mapsforge.core.graphics.Join.ROUND)
+    }
+    private val casing = org.mapsforge.map.layer.overlay.Polyline(stroke(0xFF0B3A8C.toInt(), 15f), gf)
+    private val line = org.mapsforge.map.layer.overlay.Polyline(stroke(0xFF3B8BFF.toInt(), 9f), gf)
+    val destination = DestinationLayer()
+    private var shownRoute: com.civiclauncher.app.launcher.nav.Route? = null
+    private var shownFrom = -1
+
+    fun install(mv: MapView) {
+        mv.layerManager.layers.add(casing)
+        mv.layerManager.layers.add(line)
+    }
+
+    fun show(route: com.civiclauncher.app.launcher.nav.Route?, from: Int, dest: LatLong?) {
+        destination.set(dest)
+        if (route === shownRoute && from == shownFrom) return
+        shownRoute = route
+        shownFrom = from
+        val pts = route?.points?.let { it.subList(from.coerceIn(0, it.lastIndex), it.size) }.orEmpty()
+        casing.setPoints(pts)
+        line.setPoints(pts)
+        line.requestRedraw()
+    }
+}
+
+/** Banderita del destino: un círculo rojo con borde blanco. */
+private class DestinationLayer : Layer() {
+    @Volatile private var pos: LatLong? = null
+    private val gf = AndroidGraphicFactory.INSTANCE
+    private val ring = gf.createPaint().apply { setColor(0xFFFFFFFF.toInt()); setStyle(Style.FILL) }
+    private val fill = gf.createPaint().apply { setColor(0xFFFF453A.toInt()); setStyle(Style.FILL) }
+
+    fun set(p: LatLong?) {
+        if (p == pos) return
+        pos = p
+        requestRedraw()
+    }
+
+    override fun draw(boundingBox: BoundingBox, zoomLevel: Byte, canvas: Canvas, topLeftPoint: Point, rotation: Rotation) {
+        val p = pos ?: return
+        val mapSize = MercatorProjection.getMapSize(zoomLevel, displayModel?.tileSize ?: 256)
+        val x = (MercatorProjection.longitudeToPixelX(p.longitude, mapSize) - topLeftPoint.x).toInt()
+        val y = (MercatorProjection.latitudeToPixelY(p.latitude, mapSize) - topLeftPoint.y).toInt()
+        canvas.drawCircle(x, y, 13, ring)
+        canvas.drawCircle(x, y, 9, fill)
+    }
 }
 
 /** Flecha azul de "estás aquí", que gira hacia donde avanza el carro. */

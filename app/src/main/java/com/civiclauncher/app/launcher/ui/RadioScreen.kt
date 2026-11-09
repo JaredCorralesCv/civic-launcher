@@ -71,9 +71,7 @@ fun RadioScreen(onOpen: (Dest) -> Unit) {
     // Misma estructura que el reproductor de música: arriba regresar + acción; en medio el
     // contenido; abajo el selector de fuente compacto y centrado.
     PlayerFrame(tint = RADIO_TINT) {
-        Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
-            BackButton { onOpen(Dest.HOME) }
-            Spacer(Modifier.weight(1f))
+        PlayerTopBar(onBack = { onOpen(Dest.HOME) }) {
             PlayerHeaderAction("Estaciones") {
                 if (!radio.openStations()) Toast.makeText(ctx, "La radio no está instalada", Toast.LENGTH_SHORT).show()
             }
@@ -90,7 +88,7 @@ fun RadioScreen(onOpen: (Dest) -> Unit) {
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Las flechas cambian de estación",
+                    if (info.isSource) "Usa las flechas para cambiar de estación" else "Un momento, cambiando a la radio",
                     style = Civic.type.body,
                     color = Civic.colors.textDim,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -146,7 +144,8 @@ private fun DialPanel(info: RadioInfo, modifier: Modifier) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
                 info.frequency ?: if (info.band == "AM") "----" else "--.-",
-                style = Civic.type.clock.copy(fontSize = 112.sp, lineHeight = 112.sp, fontWeight = FontWeight.Medium, letterSpacing = (-0.04).em),
+                // Letra ligera y números del mismo ancho, como el tacómetro de Inicio: elegante y sin "brincos".
+                style = Civic.type.clock.copy(fontSize = 116.sp, lineHeight = 116.sp, fontWeight = FontWeight.Light, letterSpacing = (-0.03).em, fontFeatureSettings = "tnum"),
                 color = Civic.colors.text,
                 maxLines = 1,
             )
@@ -171,7 +170,9 @@ private fun DialPanel(info: RadioInfo, modifier: Modifier) {
 private fun Dial(position: Float?, am: Boolean) {
     val tick = Civic.colors.textFaint
     val major = Civic.colors.textDim
-    val needle = Civic.colors.accent
+    val needle = Civic.colors.text
+    // La aguja se desliza al cambiar de estación (se lee en el dibujo: no recompone la pantalla).
+    val animated by androidx.compose.animation.core.animateFloatAsState(position ?: 0f, androidx.compose.animation.core.tween(450), label = "dial")
     Column {
         Box(
             Modifier
@@ -191,8 +192,10 @@ private fun Dial(position: Float?, am: Boolean) {
                         )
                     }
                     if (position != null) {
-                        val x = position * size.width
-                        drawRoundRect(needle, Offset(x - 2f, 0f), Size(4f, size.height), CornerRadius(2f))
+                        // Aguja de luz: halo suave y una línea clara, igual que la del tacómetro.
+                        val x = animated * size.width
+                        drawRoundRect(RADIO_TINT.copy(alpha = 0.45f), Offset(x - 6f, -4f), Size(12f, size.height + 8f), CornerRadius(6f))
+                        drawRoundRect(needle, Offset(x - 1.5f, -4f), Size(3f, size.height + 8f), CornerRadius(1.5f))
                     }
                 },
         )

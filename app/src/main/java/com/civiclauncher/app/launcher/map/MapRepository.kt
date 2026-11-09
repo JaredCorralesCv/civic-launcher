@@ -267,7 +267,7 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
      * [bearing] se prefieren las calles que van en tu misma dirección, y la calle de antes se queda
      * mientras siga casi igual de buena (así no brinca a la transversal en cada esquina).
      */
-    suspend fun streetAt(lat: Double, lon: Double, bearing: Float?): String? = streetLock.withLock {
+    suspend fun streetAt(lat: Double, lon: Double, bearing: Float?, sticky: Boolean = true): String? = streetLock.withLock {
         val file = (status.value as? MapStatus.Ready)?.file ?: return@withLock null
         withContext(Dispatchers.IO) {
             runCatching {
@@ -295,8 +295,11 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
                         bestScore = score
                         best = s.name
                     }
-                    if (s.name == lastStreet && score < previousScore) previousScore = score
+                    if (sticky && s.name == lastStreet && score < previousScore) previousScore = score
                 }
+                // [sticky] false: una consulta suelta (el nombre de un destino o de la calle de la
+                // siguiente vuelta), que no debe mover la "calle en la que vas".
+                if (!sticky) return@runCatching best
                 val keep = lastStreet != null && previousScore <= bestScore * 1.3 + 3.0
                 (if (keep) lastStreet else best).also { lastStreet = it }
             }.getOrNull()
@@ -329,23 +332,6 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
         return kotlin.math.sin(Math.toRadians(diff))
     }
 
-    private fun distanceToSegmentM(lat: Double, lon: Double, a: LatLong, b: LatLong): Double {
-        // Proyección plana local: suficiente para distancias de decenas de metros.
-        val kx = 111_320.0 * cos(Math.toRadians(lat))
-        val ky = 110_540.0
-        val ax = (a.longitude - lon) * kx
-        val ay = (a.latitude - lat) * ky
-        val bx = (b.longitude - lon) * kx
-        val by = (b.latitude - lat) * ky
-        val dx = bx - ax
-        val dy = by - ay
-        val len2 = dx * dx + dy * dy
-        val t = if (len2 == 0.0) 0.0 else (-(ax * dx + ay * dy) / len2).coerceIn(0.0, 1.0)
-        val px = ax + t * dx
-        val py = ay + t * dy
-        return sqrt(px * px + py * py)
-    }
-
     companion object {
         const val MEXICO_URL = "https://download.mapsforge.org/maps/v5/north-america/mexico.map"
         const val MEXICO_SIZE_MB = 686
@@ -355,4 +341,22 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
             "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link", "road",
         )
     }
+}
+
+/** Metros desde el punto hasta el tramo a-b (proyección plana local: bien para decenas de metros). */
+internal fun distanceToSegmentM(lat: Double, lon: Double, a: LatLong, b: LatLong): Double {
+    // Proyección plana local: suficiente para distancias de decenas de metros.
+    val kx = 111_320.0 * cos(Math.toRadians(lat))
+    val ky = 110_540.0
+    val ax = (a.longitude - lon) * kx
+    val ay = (a.latitude - lat) * ky
+    val bx = (b.longitude - lon) * kx
+    val by = (b.latitude - lat) * ky
+    val dx = bx - ax
+    val dy = by - ay
+    val len2 = dx * dx + dy * dy
+    val t = if (len2 == 0.0) 0.0 else (-(ax * dx + ay * dy) / len2).coerceIn(0.0, 1.0)
+    val px = ax + t * dx
+    val py = ay + t * dy
+    return sqrt(px * px + py * py)
 }
