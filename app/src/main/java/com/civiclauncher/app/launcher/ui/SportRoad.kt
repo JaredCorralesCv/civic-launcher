@@ -1,5 +1,6 @@
 package com.civiclauncher.app.launcher.ui
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,6 +18,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
@@ -56,7 +59,7 @@ private fun StripSurface(modifier: Modifier, onClick: (() -> Unit)?, content: @C
     ) { content() }
 }
 
-private val thin = TextStyle(fontWeight = FontWeight.Light, fontFeatureSettings = "tnum", letterSpacing = (-0.02).em)
+private val thin = TextStyle(fontFamily = com.civiclauncher.app.ui.design.Inter, fontWeight = FontWeight.Light, fontFeatureSettings = "tnum", letterSpacing = (-0.02).em)
 
 /** Velocidad en franja: el número grande y fino, al centro. */
 @Composable
@@ -106,19 +109,21 @@ internal fun RpmStrip(d: DriveValues, modifier: Modifier, onClick: (() -> Unit)?
  * a ~20 cuadros por segundo, y en las miniaturas del menú nunca.
  */
 @Composable
-internal fun RoadWidget(speed: Float?, live: Boolean, modifier: Modifier, onClick: (() -> Unit)?) {
+internal fun RoadWidget(speed: () -> Float, live: Boolean, modifier: Modifier, onClick: (() -> Unit)?) {
     val active = LocalScreenActive.current
     val phase = remember { mutableFloatStateOf(0f) }
-    val v = speed ?: 0f
-    val moving = live && active && v > 2f
-    LaunchedEffect(moving, (v / 5).toInt()) {
+    val latest = androidx.compose.runtime.rememberUpdatedState(speed)
+    // Se lee la velocidad solo para saber si se mueve: cada km/h ya no vuelve a armar el widget.
+    val reduced by com.civiclauncher.app.launcher.LowPower.active.collectAsStateWithLifecycle()
+    val moving by remember(live, active, reduced) { derivedStateOf { live && active && !reduced && latest.value() > 2f } }
+    LaunchedEffect(moving) {
         if (!moving) return@LaunchedEffect
         var last = 0L
-        // Fracción del camino por segundo: a 100 km/h, ~1.4 rayas por segundo.
-        val perSec = v / 100f * 1.4f
         while (true) {
             kotlinx.coroutines.delay(50)
             withFrameNanos { t ->
+                // Fracción del camino por segundo: a 100 km/h, ~1.4 rayas por segundo.
+                val perSec = latest.value() / 100f * 1.4f
                 if (last != 0L) phase.floatValue = (phase.floatValue + perSec * (t - last) / 1e9f) % 1f
                 last = t
             }
@@ -134,9 +139,9 @@ internal fun RoadWidget(speed: Float?, live: Boolean, modifier: Modifier, onClic
         // Tres capas: lo fijo de abajo (camino), las rayas (lo único que se mueve) y lo fijo de arriba
         // (oscuridad y el carro). Cada capa tiene su propio registro de dibujo: al moverse las rayas
         // solo se vuelve a dibujar esa capa, no el carro con todas sus curvas.
-        Canvas(Modifier.fillMaxSize().graphicsLayer()) { drawRoadBase() }
+        Canvas(Modifier.fillMaxSize().staticLayer(live)) { drawRoadBase() }
         Canvas(Modifier.fillMaxSize().graphicsLayer()) { drawRoadStripes(phase.floatValue) }
-        Canvas(Modifier.fillMaxSize().graphicsLayer()) { drawRoadTop() }
+        Canvas(Modifier.fillMaxSize().staticLayer(live)) { drawRoadTop() }
     }
 }
 

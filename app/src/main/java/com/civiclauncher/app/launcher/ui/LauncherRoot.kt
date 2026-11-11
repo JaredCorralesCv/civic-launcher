@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -83,9 +84,31 @@ fun LauncherRoot(homePresses: Flow<Unit>) {
     }
     var dest by rememberSaveable { mutableStateOf(Dest.HOME) }
 
-    LaunchedEffect(Unit) { homePresses.collect { dest = Dest.HOME } }
+    LaunchedEffect(Unit) {
+        homePresses.collect {
+            SportLayout.screensaver.value = false
+            dest = Dest.HOME
+        }
+    }
+    // Al volver a Civic (encender el carro, regresar de otra app) el salvapantallas se quita.
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) { SportLayout.screensaver.value = false }
+    // Cada cambio de pantalla al registro (adb logcat -s CivicUI).
+    LaunchedEffect(dest) { android.util.Log.i("CivicUI", "pantalla: $dest") }
+    // Música, Radio, Apps y Ajustes no muestran datos del motor: el OBD baja el ritmo.
+    LaunchedEffect(dest) { c.obd.setLiveScreen(dest == Dest.HOME || dest == Dest.VEHICLE || dest == Dest.MAP) }
+    // Avisos cortos que nacen fuera de la pantalla ("La radio no respondió").
+    LaunchedEffect(Unit) {
+        com.civiclauncher.app.launcher.data.Notices.flow.collect {
+            android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
     // En un launcher, "atrás" nunca debe sacarte de la pantalla de inicio.
     BackHandler {
+        // "Atrás" primero quita el salvapantallas.
+        if (SportLayout.screensaver.value) {
+            SportLayout.screensaver.value = false
+            return@BackHandler
+        }
         dest = when (dest) {
             Dest.CLEANUP -> Dest.SETTINGS
             else -> Dest.HOME
@@ -103,26 +126,22 @@ fun LauncherRoot(homePresses: Flow<Unit>) {
         }
     }
 
-    val night by nightState
+    // El estilo Sport es un tablero: siempre oscuro (de día, con los colores claros, sus medidores
+    // blancos sin tarjeta no se leían). El estilo Original sigue el tema elegido.
+    val sportStyle = c.launcherPrefs.homeStyle.collectAsStateWithLifecycle().value == com.civiclauncher.app.launcher.data.HomeStyle.SPORT
+    val night = nightState.value || sportStyle
+    LaunchedEffect(night) { c.wallpapers.setNight(night) }
+    // Ya viene con el velo pintado y opaco (ver WallpaperRepository).
     val wallpaper by c.wallpapers.image.collectAsStateWithLifecycle()
-    val brightness by c.wallpapers.brightness.collectAsStateWithLifecycle()
-    // El velo se "hornea" una sola vez dentro de la imagen (en segundo plano): así la pantalla dibuja
-    // una capa completa menos en CADA cuadro. La Mali-450 tiene poca capacidad de relleno.
-    val backdrop by androidx.compose.runtime.produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, wallpaper, night, brightness) {
-        val img = wallpaper
-        value = if (img == null) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            val veil = if (night) android.graphics.Color.argb(((0.30f + 0.45f * brightness) * 255).toInt(), 0, 0, 0)
-            else android.graphics.Color.argb(((0.15f + 0.45f * (1f - brightness)) * 255).toInt(), 255, 255, 255)
-            val bmp = img.asAndroidBitmap().copy(android.graphics.Bitmap.Config.ARGB_8888, true)
-            android.graphics.Canvas(bmp).drawColor(veil)
-            bmp.asImageBitmap()
-        }
-    }
-    CivicDesignTheme(night = night, glass = wallpaper != null) {
-        Box(Modifier.fillMaxSize().background((Civic.colors.opaque ?: Civic.colors).background)) {
+    val accent by c.wallpapers.accent.collectAsStateWithLifecycle()
+    val useAccent by c.launcherPrefs.accentFromWallpaper.collectAsStateWithLifecycle()
+    CivicDesignTheme(night = night, glass = wallpaper != null, accent = if (useAccent) accent?.let { androidx.compose.ui.graphics.Color(it) } else null) {
+        // Con imagen no se pinta color debajo: era una capa completa de más en cada cuadro.
+        val solid = (Civic.colors.opaque ?: Civic.colors).background
+        Box(if (wallpaper != null) Modifier.fillMaxSize() else Modifier.fillMaxSize().background(solid)) {
             // Fondo con el velo ya incluido: de noche oscurece más los fondos claros; de día aclara
             // los oscuros. Viene del tamaño exacto de la pantalla, así que se dibuja sin escalar.
-            backdrop?.let { img ->
+            wallpaper?.let { img ->
                 androidx.compose.foundation.Image(
                     img,
                     contentDescription = null,
@@ -155,6 +174,13 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
     val sport = prefs.homeStyle.collectAsStateWithLifecycle().value == com.civiclauncher.app.launcher.data.HomeStyle.SPORT
     val autoHide = autoHidePref && !sport
     var barVisible by remember { mutableStateOf(true) }
+    // Arranque escalonado: primero fondo y barra; Inicio (con sus widgets y el mapa) entra dos cuadros después.
+    var homeReady by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        androidx.compose.runtime.withFrameNanos { }
+        androidx.compose.runtime.withFrameNanos { }
+        homeReady = true
+    }
     // Los toques van por un canal, no por un estado: así tocar la pantalla ya no vuelve a componer
     // toda la pantalla (solo reinicia la cuenta regresiva).
     val touches = remember { kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1) }
@@ -166,6 +192,7 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
             }
         }
     }
+    MapHousekeeping()
     Box(
         Modifier
             .fillMaxSize()
@@ -209,7 +236,7 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
                 androidx.compose.runtime.CompositionLocalProvider(LocalBarShift provides shift) {
                     Box(Modifier.fillMaxSize().visibleOnly(dest == Dest.HOME)) {
                         androidx.compose.runtime.CompositionLocalProvider(LocalScreenActive provides (dest == Dest.HOME)) {
-                            HomeScreen(onOpen = go)
+                            if (homeReady) HomeScreen(onOpen = go)
                         }
                     }
                     // Apps también vive siempre: armar la cuadrícula con todos los íconos tardaba ~300 ms
@@ -246,9 +273,64 @@ private fun LauncherContent(dest: Dest, night: Boolean, go: (Dest) -> Unit) {
         if (!barVisible && autoHide) {
             BarHandle(Modifier.align(Alignment.BottomCenter)) { barVisible = true }
         }
+        if (homeReady && (dest == Dest.HOME || dest == Dest.MAP)) ResumeRouteOffer(Modifier.align(Alignment.TopCenter)) { go(Dest.MAP) }
         // Salvapantallas (lo inicia su widget de Inicio Sport): encima de todo, incluida la barra.
         val saver by SportLayout.screensaver.collectAsStateWithLifecycle()
         if (saver) Screensaver { SportLayout.screensaver.value = false }
+    }
+}
+
+/** Si Civic se cerró a medio camino: ofrece seguir hacia el mismo destino. */
+@Composable
+private fun ResumeRouteOffer(modifier: Modifier, onContinue: () -> Unit) {
+    val nav = LocalContext.current.container.nav
+    val place = nav.resumable.collectAsStateWithLifecycle().value ?: return
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(50)
+    com.civiclauncher.app.ui.design.OpaqueSurfaces {
+        Row(
+            modifier
+                .padding(top = 12.dp)
+                .clip(shape)
+                .background(Civic.colors.surfaceRaised)
+                .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("¿Continuar la ruta a ${place.name}?", style = Civic.type.label, color = Civic.colors.text, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 420.dp))
+            com.civiclauncher.app.ui.design.CivicButton("Continuar", { nav.continueRoute(); onContinue() }, kind = com.civiclauncher.app.ui.design.ButtonKind.Primary)
+            com.civiclauncher.app.ui.design.CivicButton("No", { nav.dismissResume() }, kind = com.civiclauncher.app.ui.design.ButtonKind.Secondary)
+        }
+    }
+}
+
+/**
+ * Tareas del mapa que antes vivían dentro de la tarjeta del mapa de Inicio (y no corrían en los diseños
+ * Sport sin mapa): revisar si hay mapa nuevo, guardar la última ubicación y preparar la búsqueda.
+ */
+@Composable
+private fun MapHousekeeping() {
+    val c = LocalContext.current.container
+    val gps = c.gps.speed.collectAsStateWithLifecycle()
+    val ready = c.map.status.collectAsStateWithLifecycle().value is com.civiclauncher.app.launcher.map.MapStatus.Ready
+    // Por si copiaste el mapa por adb o USB mientras Civic estaba abierto.
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) { c.map.refresh() }
+    // Última ubicación: cada ~100 m (y como mucho cada 30 s, eso lo limita el repositorio).
+    val spot by remember {
+        androidx.compose.runtime.derivedStateOf {
+            val g = gps.value
+            if (g.lat != null && g.lon != null) Math.round(g.lat * 1000) to Math.round(g.lon * 1000) else null
+        }
+    }
+    LaunchedEffect(spot) { if (spot != null) c.map.rememberPosition(gps.value) }
+    // Con mapa y ubicación, el índice de búsqueda se arma solo en segundo plano, un minuto después del
+    // arranque: al buscar un destino ya está listo.
+    val haveFix by remember { androidx.compose.runtime.derivedStateOf { gps.value.fresh && gps.value.lat != null } }
+    LaunchedEffect(haveFix, ready) {
+        if (haveFix && ready) {
+            delay(60_000)
+            val g = c.gps.speed.value
+            if (g.lat != null && g.lon != null) c.nav.search.prebuild(org.mapsforge.core.model.LatLong(g.lat, g.lon))
+        }
     }
 }
 

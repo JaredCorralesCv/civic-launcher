@@ -114,7 +114,8 @@ fun RadioScreen(onOpen: (Dest) -> Unit) {
                 if (c.media.playBluetooth()) onOpen(Dest.MUSIC)
                 else openMusicApp(ctx, MusicSource.BLUETOOTH, VendorApps.BLUETOOTH)
             },
-            onRadio = {},
+            // Ya estás en la radio: el segmento solo confirma (antes era un botón que no hacía nada).
+            onRadio = { radio.activate() },
             modifier = Modifier.align(Alignment.CenterHorizontally).width(380.dp).height(50.dp),
         )
     }

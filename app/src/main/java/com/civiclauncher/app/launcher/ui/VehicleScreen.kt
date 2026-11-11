@@ -106,7 +106,7 @@ fun VehicleScreen() {
     Column(Modifier.fillMaxSize().padding(horizontal = PAGE_GUTTER, vertical = Civic.space.m), verticalArrangement = Arrangement.spacedBy(Civic.space.m)) {
         // Encabezado: título · pestañas · estado y adaptador.
         Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Vehículo", style = Civic.type.headline.copy(fontSize = 28.sp), color = Civic.colors.text)
+            Text("Vehículo", style = Civic.type.pageTitle, color = Civic.colors.text)
             Spacer(Modifier.width(Civic.space.l))
             if (config.mode != ObdMode.NONE) {
                 GlassTabs(VehicleTab.entries, tab, { it.label }, { tab = it }, Modifier.weight(1f).widthIn(max = 520.dp))
@@ -441,7 +441,7 @@ private fun DiagTab(state: EngineState) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(14.dp).clip(CircleShape).background(tone.color()))
                 Spacer(Modifier.width(Civic.space.m))
-                Text(title, style = Civic.type.headline.copy(fontSize = 28.sp), color = Civic.colors.text)
+                Text(title, style = Civic.type.pageTitle, color = Civic.colors.text)
             }
             Spacer(Modifier.height(Civic.space.s))
             Text(
@@ -563,6 +563,12 @@ private fun InfoRow(label: String, value: String) {
 /** Todo lo que el carro reporta, agrupado. Solo aparecen los datos que tu carro sí tiene. */
 @Composable
 private fun SensorsTab(dataState: State<VehicleData>) {
+    // Lo exclusivo de esta pestaña solo se le pide al carro mientras está abierta.
+    val obd = LocalContext.current.container.obd
+    androidx.compose.runtime.DisposableEffect(obd) {
+        obd.setSensorsOpen(true)
+        onDispose { obd.setSensorsOpen(false) }
+    }
     val data = dataState.value
     val groups = remember(data) {
         PidGroup.entries.mapNotNull { g ->

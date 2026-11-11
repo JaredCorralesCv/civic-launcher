@@ -67,7 +67,12 @@ sealed interface MediaState {
  * Límite conocido (Fase 0): AutoKit no comparte la canción. En ese caso la tarjeta dice
  * "Android Auto" y ofrece los controles, sin título.
  */
-class MediaRepository(private val context: Context, private val scope: CoroutineScope) {
+class MediaRepository(
+    private val context: Context,
+    private val scope: CoroutineScope,
+    /** Ajuste: si el celular empieza a sonar con la radio puesta, ¿le quita el audio? */
+    private val phoneInterruptsRadio: () -> Boolean = { true },
+) {
     private val _state = MutableStateFlow<MediaState>(MediaState.Idle(null))
     val state: StateFlow<MediaState> = _state.asStateFlow()
 
@@ -86,6 +91,42 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
     private val msm = context.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
     private var listening = false
     private var current: MediaController? = null
+    /** Todas las sesiones activas con su vigilante (antes solo se vigilaba la elegida). */
+    private val watched = HashMap<android.media.session.MediaSession.Token, Pair<MediaController, MediaController.Callback>>()
+    /** Última fuente del fabricante vista (sys.sourcing.package). */
+    private var lastVendorSource: String? = null
+    /** Civic está al frente: se vigila el cambio de fuente del fabricante. */
+    private var foreground = false
+    /** Momento en que se pidió pausa desde Civic (esa pausa no se "deshace"). */
+    private var userPauseAt = 0L
+
+    private val _connecting = MutableStateFlow(false)
+    /** Se tocó "Bluetooth" y todavía no llega la canción del celular. */
+    val connecting: StateFlow<Boolean> = _connecting.asStateFlow()
+
+    private val connectTimeout = Runnable {
+        if (_connecting.value) {
+            _connecting.value = false
+            android.util.Log.i(TAG, "el celular no respondió al play")
+            com.civiclauncher.app.launcher.data.Notices.show("El celular no respondió. Dale play en el celular.")
+        }
+    }
+
+    /**
+     * Con Civic al frente se revisa la fuente del fabricante cada 1.5 s: si cambias a la radio con el
+     * volante o con la app del fabricante, la tarjeta se entera sola (antes había que tocar algo).
+     */
+    private val sourceWatch = object : Runnable {
+        override fun run() {
+            if (!foreground || !listening) return
+            val src = SysProp.get(SOURCE_PROP)
+            if (src != lastVendorSource) {
+                android.util.Log.i(TAG, "la fuente cambió: $lastVendorSource -> $src")
+                rechoose()
+            }
+            handler.postDelayed(this, SOURCE_POLL_MS)
+        }
+    }
     private var lastArtKey: Any? = null
     private var lastArt: Pair<ImageBitmap, Color>? = null
 
@@ -115,7 +156,19 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
      */
     fun onLauncherResumed() {
         lastLauncherResume = SystemClock.elapsedRealtime()
+        // Siempre al volver a Civic, sin importar qué tarjeta esté en pantalla (en el estilo Sport nadie
+        // lo llamaba y Civic nunca se enteraba de la música).
+        refresh()
+        foreground = true
+        handler.removeCallbacks(sourceWatch)
+        handler.postDelayed(sourceWatch, SOURCE_POLL_MS)
         if (lastLauncherResume - lastBtPauseAt < PAUSE_ON_EXIT_MS) undoExitPause()
+    }
+
+    /** Civic dejó de estar al frente: deja de revisar la fuente (no gasta nada en segundo plano). */
+    fun onLauncherPaused() {
+        foreground = false
+        handler.removeCallbacks(sourceWatch)
     }
 
     /**
@@ -132,7 +185,8 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
     private fun undoExitPause() {
         // Solo si el audio sigue siendo del Bluetooth: si la pausa fue porque cambiaste a la radio,
         // no se toca.
-        if (SystemClock.elapsedRealtime() < yieldUntil || SysProp.get("sys.sourcing.package") != VendorApps.BLUETOOTH) {
+        val now = SystemClock.elapsedRealtime()
+        if (now < yieldUntil || now - userPauseAt < USER_PAUSE_MS || SysProp.get(SOURCE_PROP) != VendorApps.BLUETOOTH) {
             lastBtPauseAt = 0L
             return
         }
@@ -160,10 +214,13 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
             }
             // El celular empezó a sonar (le diste play en el teléfono). Si la pantalla no tiene al
             // Bluetooth como fuente, lo pausaría enseguida: lo tomamos y confirmamos el play.
-            if (becamePlaying && SysProp.get("sys.sourcing.package") != VendorApps.BLUETOOTH) {
+            val src = SysProp.get(SOURCE_PROP)
+            if (becamePlaying && src != VendorApps.BLUETOOTH) {
                 val now = SystemClock.elapsedRealtime()
-                // Si acabas de elegir otra fuente (la radio), esa decisión manda.
-                if (now - lastBtResume > 4_000 && now > yieldUntil) {
+                // Si acabas de elegir otra fuente (la radio), esa decisión manda; y con la radio puesta,
+                // solo si el ajuste "El celular interrumpe la radio" está encendido.
+                val radioBlocks = src == VendorApps.RADIO && !phoneInterruptsRadio()
+                if (now - lastBtResume > 4_000 && now > yieldUntil && !radioBlocks) {
                     lastBtResume = now
                     resumeBluetooth()
                 }
@@ -270,15 +327,64 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
      * Tocar "Bluetooth" en Inicio: suena directo, sin abrir la app del fabricante.
      * false si el celular no está conectado (entonces conviene abrir la app para conectarlo).
      */
-    fun playBluetooth(): Boolean = resumeBluetooth()
+    fun playBluetooth(): Boolean {
+        val ok = resumeBluetooth()
+        android.util.Log.i(TAG, "toque Bluetooth: pedido=$ok")
+        if (ok) {
+            // "Conectando…" hasta que llegue la canción; si no llega, se avisa (antes no pasaba nada).
+            _connecting.value = true
+            handler.removeCallbacks(connectTimeout)
+            handler.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS)
+        }
+        return ok
+    }
 
-    private val controllerCallback = object : MediaController.Callback() {
-        override fun onMetadataChanged(metadata: MediaMetadata?) = publish()
+    /**
+     * El celular empezó a mandar sonido por Bluetooth (aviso del sistema, sin importar la app: un audio
+     * de WhatsApp, un video). Si la pantalla tiene otra fuente puesta, ese sonido "avanza sin sonar".
+     * Se toma la fuente SIN mandar play al celular (eso podría arrancar otra app).
+     */
+    fun onPhoneStreamStarted() {
+        val src = SysProp.get(SOURCE_PROP)
+        val now = SystemClock.elapsedRealtime()
+        android.util.Log.i(TAG, "el celular empezó a mandar sonido · fuente=$src")
+        if (src == VendorApps.BLUETOOTH) return
+        if (now < yieldUntil) return
+        if (src == VendorApps.RADIO && !phoneInterruptsRadio()) return
+        claimBluetooth()
+    }
+
+    /**
+     * Vigilante de una sesión. La que se muestra avisa de todo; las demás solo cuando empiezan o dejan
+     * de sonar (así, si el celular empieza a sonar mientras se mostraba otra cosa, se cambia sola).
+     */
+    private fun watcherFor(c: MediaController) = object : MediaController.Callback() {
+        var lastPlaying = c.playbackState?.state == PlaybackState.STATE_PLAYING
+        override fun onMetadataChanged(metadata: MediaMetadata?) {
+            if (c.sessionToken == current?.sessionToken) publish()
+        }
         override fun onPlaybackStateChanged(state: PlaybackState?) {
-            // Si esta dejó de sonar y otra empezó, cambiamos a la otra.
-            if (state?.state != PlaybackState.STATE_PLAYING) rechoose() else publish()
+            val playing = state?.state == PlaybackState.STATE_PLAYING
+            val changed = playing != lastPlaying
+            lastPlaying = playing
+            when {
+                c.sessionToken == current?.sessionToken -> if (!playing) rechoose() else publish()
+                changed -> rechoose()
+            }
         }
         override fun onSessionDestroyed() = rechoose()
+    }
+
+    private fun syncWatchers(list: List<MediaController>) {
+        val tokens = list.map { it.sessionToken }.toSet()
+        val gone = watched.keys.filter { it !in tokens }
+        for (t in gone) watched.remove(t)?.let { (c, cb) -> runCatching { c.unregisterCallback(cb) } }
+        for (c in list) {
+            if (c.sessionToken in watched) continue
+            val cb = watcherFor(c)
+            runCatching { c.registerCallback(cb, handler) }
+            watched[c.sessionToken] = c to cb
+        }
     }
 
     /** Llamar al volver a la pantalla: por si se concedió el permiso o cambió la fuente. */
@@ -300,7 +406,8 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
     private fun stopListening() {
         if (listening) runCatching { msm.removeOnActiveSessionsChangedListener(sessionsListener) }
         listening = false
-        current?.unregisterCallback(controllerCallback)
+        for ((c, cb) in watched.values) runCatching { c.unregisterCallback(cb) }
+        watched.clear()
         current = null
         bt?.unregisterCallback(btCallback)
         bt = null
@@ -313,33 +420,45 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
 
     private fun choose(list: List<MediaController>) {
         trackBluetooth(list)
-        val vendorSource = SysProp.get("sys.sourcing.package")
-        val best = list.sortedWith(
-            compareByDescending<MediaController> { it.playbackState?.state == PlaybackState.STATE_PLAYING }
-                .thenByDescending { it.packageName == vendorSource }
-                .thenByDescending { it.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE) != null },
-        ).firstOrNull()
-        if (best?.sessionToken != current?.sessionToken) {
-            current?.unregisterCallback(controllerCallback)
-            current = best
-            best?.registerCallback(controllerCallback, handler)
-        }
+        syncWatchers(list)
+        val vendorSource = SysProp.get(SOURCE_PROP)
+        val index = SessionPicker.pick(list.map(::infoOf), vendorSource)
+        current = list.getOrNull(index)
         publish()
     }
 
+    private fun infoOf(c: MediaController) = SessionInfo(
+        pkg = c.packageName,
+        playing = c.playbackState?.state == PlaybackState.STATE_PLAYING,
+        hasTitle = c.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE) != null,
+    )
+
     private fun publish() {
         val c = current
+        val vendorSource = SysProp.get(SOURCE_PROP)
+        lastVendorSource = vendorSource
+        // Nada sonando y la radio (o Android Auto) es la fuente: eso es lo que hay que mostrar.
+        SessionPicker.idleOverride(c?.let(::infoOf), vendorSource)?.let { src ->
+            rememberSource(src)
+            _state.value = MediaState.Idle(src)
+            return
+        }
         val md = c?.metadata
         val title = md?.getString(MediaMetadata.METADATA_KEY_TITLE)?.takeIf { it.isNotBlank() }
         if (c == null || title == null) {
             // Sin datos de la canción: al menos decir de dónde viene el audio.
-            val src = (c?.packageName ?: SysProp.get("sys.sourcing.package")).takeIf { it.isNotBlank() }?.let(::sourceOf)
+            val src = (c?.packageName ?: vendorSource).takeIf { it.isNotBlank() }?.let(::sourceOf)
             if (src == MusicSource.ANDROID_AUTO) rememberSource(src)
             _state.value = MediaState.Idle(src)
             return
         }
         rememberSource(sourceOf(c.packageName))
         val ps = c.playbackState
+        // Llegó la canción del celular: se acabó el "Conectando…".
+        if (_connecting.value && sourceOf(c.packageName) == MusicSource.BLUETOOTH && ps?.state == PlaybackState.STATE_PLAYING) {
+            _connecting.value = false
+            handler.removeCallbacks(connectTimeout)
+        }
         val base = NowPlaying(
             pkg = c.packageName,
             source = sourceOf(c.packageName),
@@ -401,13 +520,7 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         return scaled.asImageBitmap() to Color(one.getPixel(0, 0))
     }
 
-    fun sourceOf(pkg: String): MusicSource = when (pkg) {
-        VendorApps.ANDROID_AUTO -> MusicSource.ANDROID_AUTO
-        BT_SESSION, VendorApps.BLUETOOTH -> MusicSource.BLUETOOTH
-        VendorApps.RADIO -> MusicSource.RADIO
-        VendorApps.MUSIC, "com.hcn.automediaplayerservice" -> MusicSource.USB
-        else -> MusicSource.APP
-    }
+    fun sourceOf(pkg: String): MusicSource = musicSourceOf(pkg)
 
     // ------------------------------------------------------------------ Controles
 
@@ -415,6 +528,8 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         val c = current
         val playing = c?.playbackState?.state == PlaybackState.STATE_PLAYING
         val actions = c?.playbackState?.actions ?: 0L
+        // Pausa pedida aquí: que Civic no la tome por la pausa de "Música BT" y la deshaga.
+        if (playing) userPauseAt = SystemClock.elapsedRealtime()
         when {
             c == null -> MediaKeys.global(context, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
             // Bluetooth en pausa: además del play hay que recuperar la fuente (si no, se oye la radio).
@@ -446,6 +561,13 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         /** Aviso que el gestor de fuentes del fabricante entiende como "el audio ahora es Bluetooth". */
         const val ACQUIRE_A2DP = "net.easyconn.a2dp.acquire"
         const val TAG = "CivicBT"
+        /** Propiedad del fabricante con la app que tiene el audio. */
+        const val SOURCE_PROP = "sys.sourcing.package"
+        const val SOURCE_POLL_MS = 1_500L
+        /** Tiempo para que llegue la canción tras tocar "Bluetooth". */
+        const val CONNECT_TIMEOUT_MS = 6_000L
+        /** Una pausa pedida desde Civic no se deshace durante este tiempo. */
+        const val USER_PAUSE_MS = 3_000L
         /** Ventana para decidir que una pausa fue la de "Música BT" al salir (se vieron ~50 ms). */
         const val PAUSE_ON_EXIT_MS = 1_500L
         /** Marca para poder cancelar los reintentos de reproducir al conectar. */

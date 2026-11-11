@@ -58,6 +58,7 @@ class RadioRepository(
     private var watchers = 0
     private var player: Any? = null
     private var lastConnectTry = Long.MIN_VALUE / 2
+    private var activateJob: Job? = null
 
     /** Llamar al mostrar la pantalla de radio; [stopWatching] al salir. Cuenta referencias. */
     fun startWatching() {
@@ -128,6 +129,9 @@ class RadioRepository(
 
     private companion object {
         const val TAG = "CivicRadio"
+        const val SOURCE_PROP = "sys.sourcing.package"
+        /** Máximo que se espera a que la radio tome el audio en cada intento. */
+        const val SWITCH_WAIT_MS = 3_000L
     }
 
     // ------------------------------------------------------------------ Controles
@@ -139,11 +143,34 @@ class RadioRepository(
     fun activate() {
         // Elegiste la radio: que Civic no recupere el Bluetooth por su cuenta en los próximos segundos.
         onYield()
-        if (SysProp.get("sys.sourcing.package") == VendorApps.RADIO) return
-        val launch = context.packageManager.getLaunchIntentForPackage(VendorApps.RADIO) ?: return
-        runCatching { context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-        scope.launch {
-            delay(900)
+        if (SysProp.get(SOURCE_PROP) == VendorApps.RADIO) return
+        val launch = context.packageManager.getLaunchIntentForPackage(VendorApps.RADIO)
+        if (launch == null) {
+            android.util.Log.w(TAG, "la radio no está instalada")
+            com.civiclauncher.app.launcher.data.Notices.show("La radio no está instalada en esta pantalla")
+            return
+        }
+        activateJob?.cancel()
+        activateJob = scope.launch {
+            // Se espera a que la radio tome el audio de verdad (antes eran 900 ms fijos: si la radio
+            // tardaba más en abrir, Civic regresaba antes y la radio nunca sonaba). Un reintento.
+            var ok = false
+            for (attempt in 1..2) {
+                runCatching { context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                val start = android.os.SystemClock.elapsedRealtime()
+                while (android.os.SystemClock.elapsedRealtime() - start < SWITCH_WAIT_MS) {
+                    if (SysProp.get(SOURCE_PROP) == VendorApps.RADIO) {
+                        ok = true
+                        break
+                    }
+                    delay(150)
+                }
+                android.util.Log.i(TAG, "radio: intento $attempt, tomó el audio=$ok")
+                if (ok) break
+            }
+            // Un instante más para que la radio termine de abrir antes de volver.
+            if (ok) delay(300)
+            if (!ok) com.civiclauncher.app.launcher.data.Notices.show("La radio no respondió. Ábrela desde Estaciones.")
             android.util.Log.i(TAG, "volviendo a Civic tras abrir la radio")
             runCatching {
                 // Igual que el botón de inicio: así Android lo trata como "volver al launcher".

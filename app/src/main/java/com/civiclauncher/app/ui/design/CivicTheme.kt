@@ -1,5 +1,7 @@
 package com.civiclauncher.app.ui.design
 
+import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
@@ -29,10 +31,19 @@ object Civic {
  * o las luces del carro. También configura Material 3 para que sus componentes usen Inter y estos colores.
  */
 @Composable
-fun CivicDesignTheme(night: Boolean = true, glass: Boolean = false, content: @Composable () -> Unit) {
+fun CivicDesignTheme(night: Boolean = true, glass: Boolean = false, accent: androidx.compose.ui.graphics.Color? = null, content: @Composable () -> Unit) {
     // Material (diálogos, campos de texto) siempre con los colores opacos; lo de Civic, en vidrio si hay fondo.
-    val base = if (night) NightPalette else DayPalette
-    val p = if (glass) base.glass() else base
+    // Con acento antes de pasar a vidrio: las superficies opacas (menús, mapa) también lo llevan.
+    val base = remember(night, accent) {
+        val palette = if (night) NightPalette else DayPalette
+        if (accent == null) palette
+        else palette.copy(
+            accent = accent,
+            accentPressed = accent.copy(red = accent.red * 0.8f, green = accent.green * 0.8f, blue = accent.blue * 0.8f),
+            onAccent = if (com.civiclauncher.app.launcher.data.AccentPicker.needsDarkText(accent.toArgb())) androidx.compose.ui.graphics.Color(0xFF15181D) else androidx.compose.ui.graphics.Color.White,
+        )
+    }
+    val p = remember(base, glass) { if (glass) base.glass() else base }
     val type = CivicTypography()
     val scheme = if (night) {
         darkColorScheme(

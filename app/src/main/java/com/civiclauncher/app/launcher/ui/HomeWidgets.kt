@@ -106,9 +106,11 @@ fun CompactMusicCard(modifier: Modifier, onOpen: () -> Unit, onOpenRadio: () -> 
                     TransportRow(null, repo::previous, repo::playPause, repo::next)
                 }
                 else -> {
-                    CardHeader(P.MusicNotesLight, "Música", "Sin música", Tone.Neutral)
+                    // Tras tocar "Bluetooth": "Conectando…" hasta que llegue la canción (antes no se veía nada).
+                    val connecting by c.media.connecting.collectAsStateWithLifecycle()
+                    CardHeader(P.MusicNotesLight, "Música", if (connecting) "Conectando" else "Sin música", if (connecting) Tone.Accent else Tone.Neutral)
                     Spacer(Modifier.weight(1f))
-                    Title("¿Qué escuchamos?", null)
+                    if (connecting) Title("Conectando…", "Pidiendo música al celular") else Title("¿Qué escuchamos?", rememberPhoneLink())
                     Spacer(Modifier.weight(1f))
                     SourceSwitch(
                         current = c.media.lastSource.collectAsStateWithLifecycle().value ?: MusicSource.BLUETOOTH,
@@ -254,11 +256,11 @@ private fun SmallPill(label: String, icon: ImageVector, onClick: () -> Unit) {
 @Composable
 fun VehicleSummaryCard(modifier: Modifier, onClick: () -> Unit) {
     val c = LocalContext.current.container
-    val config by c.obd.config.collectAsStateWithLifecycle()
-    val obdState by c.obd.state.collectAsStateWithLifecycle()
-    val dataState = c.obd.data.collectAsStateWithLifecycle()
-    val live by c.obd.live.collectAsStateWithLifecycle()
-    val diag by c.obd.diagnostics.collectAsStateWithLifecycle()
+    val config by c.obd.config.collectWhenVisible()
+    val obdState by c.obd.state.collectWhenVisible()
+    val dataState = c.obd.data.collectWhenVisible()
+    val live by c.obd.live.collectWhenVisible()
+    val diag by c.obd.diagnostics.collectWhenVisible()
     val (speed, fromObd) = rememberSpeed()
     val connected = obdState is EngineState.Connected
     val hasObd = config.mode != ObdMode.NONE

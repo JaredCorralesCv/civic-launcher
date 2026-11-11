@@ -11,6 +11,7 @@ junit5 = "6.1.3"
 turbine = "1.2.1"
 mapsforge = "0.25.0"
 androidsvg = "1.4"
+dadb = "1.2.10"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -34,6 +35,7 @@ turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
 mapsforge-map-android = { module = "org.mapsforge:mapsforge-map-android", version.ref = "mapsforge" }
 mapsforge-themes = { module = "org.mapsforge:mapsforge-themes", version.ref = "mapsforge" }
 androidsvg = { module = "com.caverock:androidsvg", version.ref = "androidsvg" }
+dadb = { module = "dev.mobile:dadb", version.ref = "dadb" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

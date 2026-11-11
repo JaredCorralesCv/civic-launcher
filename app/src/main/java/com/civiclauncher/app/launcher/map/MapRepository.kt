@@ -64,7 +64,16 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
         org.mapsforge.core.util.Parameters.PARENT_TILES_RENDERING = org.mapsforge.core.util.Parameters.ParentTilesRendering.SPEED
         AndroidGraphicFactory.createInstance(context.applicationContext as Application)
         refresh()
+        // Los mosaicos ya se conservan entre arranques: los de un estilo anterior solo ocuparían espacio.
+        val current = MapTheme.CACHE_SUFFIX
+        scope.launch(Dispatchers.IO) {
+            tileDirs().filterNot { it.name.startsWith("map-shared-") && it.name.endsWith(current) }.forEach { it.deleteRecursively() }
+        }
     }
+
+    /** Carpetas de mosaicos ya dibujados. */
+    private fun tileDirs(): List<File> =
+        context.externalCacheDir?.listFiles { f -> f.isDirectory && f.name.startsWith("map-") }?.toList().orEmpty()
 
     /** El mapa más grande ya completo (las descargas e importaciones a medias no terminan en .map). */
     private fun readyFile(): File? =
@@ -216,6 +225,7 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
         dir.listFiles()?.forEach { it.delete() }
         closeStreetFile()
         refresh()
+        scope.launch(Dispatchers.IO) { tileDirs().forEach { it.deleteRecursively() } }
     }
 
     // ------------------------------------------------------------------ Última posición
@@ -232,8 +242,8 @@ class MapRepository(private val context: Context, private val scope: CoroutineSc
     fun rememberPosition(gps: GpsSpeed) {
         val lat = gps.lat ?: return
         val lon = gps.lon ?: return
-        val now = System.currentTimeMillis()
-        if (now - lastSaved < 30_000) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lastSaved != 0L && now - lastSaved < 30_000) return
         lastSaved = now
         sp.edit().putFloat("last_lat", lat.toFloat()).putFloat("last_lon", lon.toFloat()).apply()
     }

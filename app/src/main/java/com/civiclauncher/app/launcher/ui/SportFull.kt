@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +42,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -77,14 +79,11 @@ private val SAMPLE_ENGINE = EngineValues(throttle = 38f, load = 42f, coolant = 8
 @Composable
 private fun rememberEngineValues(): EngineValues {
     val c = LocalContext.current.container
-    val active = LocalScreenActive.current
-    val obdState by c.obd.state.collectAsStateWithLifecycle()
-    val data = c.obd.data.collectAsStateWithLifecycle()
-    val connected = obdState is EngineState.Connected
-    val last = remember { arrayOf(EngineValues(null, null, null, null, null, null, null, null)) }
-    val values by remember(connected, active) {
+    val obdState = c.obd.state.collectWhenVisible()
+    val data = c.obd.data.collectWhenVisible()
+    val values by remember {
         derivedStateOf {
-            if (!active) return@derivedStateOf last[0]
+            val connected = obdState.value is EngineState.Connected
             val d = data.value
             fun pid(p: com.civiclauncher.obd.PidSpec, step: Double = 1.0) =
                 if (connected) d[p].fresh()?.value?.let { (Math.round(it / step) * step).toFloat() } else null
@@ -93,13 +92,19 @@ private fun rememberEngineValues(): EngineValues {
                 intake = pid(Pids.INTAKE_AIR_TEMP), ambient = pid(Pids.AMBIENT_TEMP), oil = pid(Pids.OIL_TEMP),
                 maf = pid(Pids.MAF, 0.1),
                 battery = d.battery.fresh(30_000)?.value?.let { (Math.round(it * 10) / 10.0).toFloat() },
-            ).also { last[0] = it }
+            )
         }
     }
     return values
 }
 
-private fun fmt(v: Float?, decimals: Int = 0) = v?.let { if (decimals == 0) "%.0f".format(it) else "%.${decimals}f".format(it) } ?: "--"
+/** Con decimales solo para valores positivos (batería, flujo de aire). Sin String.format: es lento. */
+private fun fmt(v: Float?, decimals: Int = 0): String {
+    if (v == null) return "--"
+    if (decimals == 0) return Math.round(v).toString()
+    val t = Math.round(v * 10)
+    return "${t / 10}.${t % 10}"
+}
 
 /** Fondo de las pantallas completas: casi negro, con un brillo suave arriba. */
 @Composable
@@ -151,68 +156,107 @@ private fun PremiumDial(
     val red = redFrom?.let { ((it - min) / (max - min)).coerceIn(0f, 1f) }
     // El número se pone rojo por el valor (no por la animación: así no se recompone en cada cuadro).
     val hot = red != null && value != null && value >= redFrom!!
-    androidx.compose.foundation.layout.BoxWithConstraints(modifier.aspectRatio(1f), contentAlignment = Alignment.Center) {
-        val dim = minOf(maxWidth, maxHeight)
-        val showLabels = dim > 150.dp
-        Canvas(Modifier.fillMaxSize()) {
+    var dimPx by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    Box(modifier.aspectRatio(1f).onSizeChanged { dimPx = minOf(it.width, it.height) }, contentAlignment = Alignment.Center) {
+        // Capa fija: carátula, bisel, escala y números. Se pinta una sola vez.
+        Canvas(Modifier.fillMaxSize().staticLayer(live)) {
             val c = Offset(size.width / 2f, size.height / 2f)
             val r = minOf(size.width, size.height) / 2f - 2.dp.toPx()
             // Sin espacio todavía (al acomodarse la pantalla): no se dibuja. Un degradado de radio 0
             // cierra la app en Android 8.
             if (r < 8.dp.toPx()) return@Canvas
-            val start = 135f
-            val sweep = 270f
             // Carátula con profundidad y bisel metálico.
             drawCircle(Brush.radialGradient(0f to Color(0xF21C2028), 0.7f to Color(0xF20E1014), 1f to Color(0xF2060708), center = c, radius = r), r, c)
             drawCircle(
                 Brush.sweepGradient(listOf(Color.White.copy(alpha = 0.30f), Color.White.copy(alpha = 0.04f), Color.White.copy(alpha = 0.22f), Color.White.copy(alpha = 0.03f), Color.White.copy(alpha = 0.30f)), c),
                 r - 1.dp.toPx(), c, style = Stroke(1.5.dp.toPx()),
             )
-            val arcR = r - r * 0.09f
-            val arcW = (r * 0.035f).coerceAtLeast(3.dp.toPx())
+            val g = DialGeometry(r, (r * 0.035f).coerceAtLeast(3.dp.toPx()))
             // Pista y zona roja.
-            plainArc(c, arcR, start, sweep, Color.White.copy(alpha = 0.07f), arcW)
-            if (red != null) plainArc(c, arcR, start + sweep * red, sweep * (1 - red), G_RED.copy(alpha = 0.30f), arcW, round = false)
-            // Arco de luz con resplandor.
-            gradientArc(c, arcR, start, sweep, sweep * f, arcW * 5f, stops, alpha = 0.10f)
-            gradientArc(c, arcR, start, sweep, sweep * f, arcW * 2.6f, stops, alpha = 0.22f)
-            gradientArc(c, arcR, start, sweep, sweep * f, arcW, stops)
-            // Escala.
-            val tickR = arcR - arcW * 2.2f
-            val majors = labels.size - 1
-            ticks(c, tickR, start, sweep, majors * 10,
-                len = { i -> when { i % 10 == 0 -> r * 0.09f; i % 5 == 0 -> r * 0.06f; else -> r * 0.035f } },
+            plainArc(c, g.arcR, DIAL_START, DIAL_SWEEP, Color.White.copy(alpha = 0.07f), g.arcW)
+            if (red != null) plainArc(c, g.arcR, DIAL_START + DIAL_SWEEP * red, DIAL_SWEEP * (1 - red), G_RED.copy(alpha = 0.30f), g.arcW, round = false)
+            ticks(c, g.tickR, DIAL_START, DIAL_SWEEP, (labels.size - 1) * 10,
+                len = { i -> g.tickLen(i) },
                 width = { i -> if (i % 10 == 0) (r * 0.014f).coerceAtLeast(1.5.dp.toPx()) else 1.dp.toPx() },
             ) { i, at ->
-                val inRed = red != null && at >= red - 0.0001f
-                val passed = at <= f
                 when {
-                    inRed -> G_RED.copy(alpha = if (i % 10 == 0) 0.95f else 0.6f)
-                    i % 10 == 0 -> Color.White.copy(alpha = if (passed) 0.95f else 0.7f)
-                    i % 5 == 0 -> Color.White.copy(alpha = if (passed) 0.7f else 0.4f)
-                    else -> Color.White.copy(alpha = if (passed) 0.45f else 0.2f)
+                    red != null && at >= red - 0.0001f -> G_RED.copy(alpha = if (i % 10 == 0) 0.95f else 0.6f)
+                    i % 10 == 0 -> Color.White.copy(alpha = 0.7f)
+                    i % 5 == 0 -> Color.White.copy(alpha = 0.4f)
+                    else -> Color.White.copy(alpha = 0.2f)
                 }
             }
-            if (showLabels) scaleLabels(paint, c, tickR - r * 0.19f, start, sweep, labels, Color.White.copy(alpha = 0.75f), r * 0.085f)
-            // Indicador luminoso sobre la escala.
-            val a = start + sweep * f
-            val tip = if (red != null && f >= red) G_RED else colorAt(stops, f)
-            drawLine(tip.copy(alpha = 0.30f), polar(c, tickR - r * 0.11f, a), polar(c, arcR + arcW, a), strokeWidth = r * 0.05f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-            drawLine(Color.White, polar(c, tickR - r * 0.11f, a), polar(c, arcR + arcW * 0.5f, a), strokeWidth = (r * 0.016f).coerceAtLeast(2.dp.toPx()), cap = androidx.compose.ui.graphics.StrokeCap.Round)
-            drawCircle(tip.copy(alpha = 0.35f), arcW * 2.2f, polar(c, arcR, a))
-            drawCircle(Color.White, arcW * 0.9f, polar(c, arcR, a))
+            if (size.minDimension > 150.dp.toPx()) scaleLabels(paint, c, g.tickR - r * 0.19f, DIAL_START, DIAL_SWEEP, labels, Color.White.copy(alpha = 0.75f), r * 0.085f)
         }
-        val density = androidx.compose.ui.platform.LocalDensity.current
-        // El número se achica si es largo (2,400): no choca con los números de la escala.
-        val big = with(density) { (dim * if (text.length > 3) 0.17f else 0.21f).coerceAtLeast(4.dp).toSp() }
-        val small = with(density) { (dim * 0.055f).coerceAtLeast(4.dp).toSp() }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            if (title != null && !showLabels) Text(title, style = Civic.type.caption.copy(fontSize = small), color = Color.White.copy(alpha = 0.5f))
-            Text(text, style = big(10, FontWeight.Medium).copy(fontSize = big, lineHeight = big), color = if (hot) G_RED else Color.White, maxLines = 1)
-            Text(unit, style = Civic.type.caption.copy(fontSize = small, letterSpacing = 0.12.em), color = Color.White.copy(alpha = 0.55f))
+        // Capa que se mueve: el arco de luz, las marcas ya alcanzadas y el indicador.
+        Canvas(Modifier.fillMaxSize()) {
+            val c = Offset(size.width / 2f, size.height / 2f)
+            val r = minOf(size.width, size.height) / 2f - 2.dp.toPx()
+            if (r < 8.dp.toPx()) return@Canvas
+            val g = DialGeometry(r, (r * 0.035f).coerceAtLeast(3.dp.toPx()))
+            gradientArc(c, g.arcR, DIAL_START, DIAL_SWEEP, DIAL_SWEEP * f, g.arcW * 5f, stops, alpha = 0.10f)
+            gradientArc(c, g.arcR, DIAL_START, DIAL_SWEEP, DIAL_SWEEP * f, g.arcW * 2.6f, stops, alpha = 0.22f)
+            gradientArc(c, g.arcR, DIAL_START, DIAL_SWEEP, DIAL_SWEEP * f, g.arcW, stops)
+            ticks(c, g.tickR, DIAL_START, DIAL_SWEEP, (labels.size - 1) * 10,
+                len = { i -> g.tickLen(i) },
+                width = { i -> if (i % 10 == 0) (r * 0.014f).coerceAtLeast(1.5.dp.toPx()) else 1.dp.toPx() },
+            ) { i, at ->
+                when {
+                    at > f || (red != null && at >= red - 0.0001f) -> null
+                    i % 10 == 0 -> Color.White.copy(alpha = 0.85f)
+                    i % 5 == 0 -> Color.White.copy(alpha = 0.5f)
+                    else -> Color.White.copy(alpha = 0.3f)
+                }
+            }
+            // Indicador luminoso sobre la escala.
+            val a = DIAL_START + DIAL_SWEEP * f
+            val tip = if (red != null && f >= red) G_RED else colorAt(stops, f)
+            val from = polar(c, g.tickR - r * 0.11f, a)
+            drawLine(tip.copy(alpha = 0.30f), from, polar(c, g.arcR + g.arcW, a), strokeWidth = r * 0.05f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            drawLine(Color.White, from, polar(c, g.arcR + g.arcW * 0.5f, a), strokeWidth = (r * 0.016f).coerceAtLeast(2.dp.toPx()), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            val p = polar(c, g.arcR, a)
+            drawCircle(tip.copy(alpha = 0.35f), g.arcW * 2.2f, p)
+            drawCircle(Color.White, g.arcW * 0.9f, p)
+        }
+        if (dimPx > 0) {
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            val dim = with(density) { dimPx.toDp() }
+            // El número se achica si es largo (2,400): no choca con los números de la escala.
+            val big = with(density) { (dim * if (text.length > 3) 0.17f else 0.21f).coerceAtLeast(4.dp).toSp() }
+            val small = with(density) { (dim * 0.055f).coerceAtLeast(4.dp).toSp() }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                if (title != null && dim <= 150.dp) Text(title, style = Civic.type.caption.copy(fontSize = small), color = Color.White.copy(alpha = 0.5f))
+                Text(text, style = big(10, FontWeight.Medium).copy(fontSize = big, lineHeight = big), color = if (hot) G_RED else Color.White, maxLines = 1)
+                Text(unit, style = Civic.type.caption.copy(fontSize = small, letterSpacing = 0.12.em), color = Color.White.copy(alpha = 0.55f))
+            }
         }
     }
 }
+
+private const val DIAL_START = 135f
+private const val DIAL_SWEEP = 270f
+
+/** Medidas de un medidor, derivadas del radio (las usan las dos capas). */
+private class DialGeometry(private val r: Float, val arcW: Float) {
+    val arcR = r - r * 0.09f
+    val tickR = arcR - arcW * 2.2f
+    fun tickLen(i: Int) = when {
+        i % 10 == 0 -> r * 0.09f
+        i % 5 == 0 -> r * 0.06f
+        else -> r * 0.035f
+    }
+}
+
+/** Escalas y colores como constantes: una lista nueva impedía saltarse el redibujo del medidor. */
+private val LABELS_NONE = listOf("", "")
+private val LABELS_SPEED_200 = listOf("0", "50", "100", "150", "200")
+private val LABELS_PERCENT = listOf("0", "25", "50", "75", "100")
+private val LABELS_COOLANT = listOf("40", "60", "80", "100", "120")
+private val LABELS_INTAKE = listOf("0", "20", "40", "60", "80")
+private val LABELS_AMBIENT = listOf("-10", "5", "20", "35", "50")
+private val LABELS_MAF = listOf("0", "15", "30", "45", "60")
+private val PURPLE_STOPS = arrayOf(0f to Color(0xFF7B6CFF), 1f to Color(0xFFB18CFF))
+private val THROTTLE_STOPS = arrayOf(0f to G_GREEN, 0.6f to G_AMBER, 1f to G_ORANGE)
 
 /** El color del degradado en el punto [f] (para que el indicador tenga el color del arco ahí). */
 private fun colorAt(stops: Array<Pair<Float, Color>>, f: Float): Color {
@@ -225,6 +269,21 @@ private fun colorAt(stops: Array<Pair<Float, Color>>, f: Float): Color {
 
 private val BLUE_STOPS = arrayOf(0f to G_BLUE, 1f to G_SKY)
 private val RPM_STOPS = arrayOf(0f to G_BLUE, 0.6f to G_SKY, 0.78f to G_AMBER, 0.85f to G_RED, 1f to G_RED)
+/** Los arcos azules de siempre o, si el fondo da un acento, con ese color. Solo cambia al cambiar el fondo. */
+@Composable
+private fun rememberAccentStops(): Pair<Array<Pair<Float, Color>>, Array<Pair<Float, Color>>> {
+    val a = Civic.colors.accent
+    return remember(a) {
+        if (a == com.civiclauncher.app.ui.design.NightPalette.accent || a == com.civiclauncher.app.ui.design.DayPalette.accent) {
+            BLUE_STOPS to RPM_STOPS
+        } else {
+            val deep = a.copy(red = a.red * 0.7f, green = a.green * 0.7f, blue = a.blue * 0.7f)
+            val light = a.copy(red = a.red + (1f - a.red) * 0.35f, green = a.green + (1f - a.green) * 0.35f, blue = a.blue + (1f - a.blue) * 0.35f)
+            arrayOf(0f to deep, 1f to light) to arrayOf(0f to deep, 0.6f to light, 0.78f to G_AMBER, 0.85f to G_RED, 1f to G_RED)
+        }
+    }
+}
+
 private val WARM_STOPS = arrayOf(0f to G_AMBER, 1f to G_ORANGE)
 private val GREEN_STOPS = arrayOf(0f to Color(0xFF1FA971), 1f to G_GREEN)
 
@@ -234,9 +293,10 @@ private val GREEN_STOPS = arrayOf(0f to Color(0xFF1FA971), 1f to G_GREEN)
 @Composable
 internal fun ClusterScreen(d: DriveValues, live: Boolean, modifier: Modifier, onClick: (() -> Unit)?) {
     val e = if (live) rememberEngineValues() else SAMPLE_ENGINE
+    val accent = rememberAccentStops()
     FullSurface(modifier, onClick, bare = live) {
         Row(Modifier.fillMaxSize().padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            PremiumDial(d.rpm, 0f, 8000f, (0..8).map { "$it" }, 6800f, rpmText(d.rpm), "RPM", RPM_STOPS, live, Modifier.weight(1f))
+            PremiumDial(d.rpm, 0f, 8000f, RPM_LABELS, 6800f, rpmText(d.rpm), "RPM", accent.second, live, Modifier.weight(1f))
             Column(Modifier.weight(0.78f).fillMaxHeight().padding(vertical = 26.dp, horizontal = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     SmallDial("Batería", e.battery, 10f, 16f, fmt(e.battery, 1), "V", null, GREEN_STOPS, live)
@@ -247,7 +307,7 @@ internal fun ClusterScreen(d: DriveValues, live: Boolean, modifier: Modifier, on
                     SmallDial("Carga", e.load, 0f, 100f, fmt(e.load), "%", null, WARM_STOPS, live)
                 }
             }
-            PremiumDial(d.speed, 0f, 220f, (0..11).map { "${it * 20}" }, null, speedText(d.speed), "KM/H", BLUE_STOPS, live, Modifier.weight(1f))
+            PremiumDial(d.speed, 0f, 220f, SPEED_LABELS_220, null, speedText(d.speed), "KM/H", accent.first, live, Modifier.weight(1f))
         }
         NavOverlay(live, Modifier.align(Alignment.TopCenter).padding(top = 8.dp))
     }
@@ -259,7 +319,7 @@ private fun RowScope.SmallDial(label: String, value: Float?, min: Float, max: Fl
     Column(Modifier.weight(1f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label.uppercase(), style = Civic.type.caption.copy(fontSize = 10.sp, letterSpacing = 0.12.em, fontWeight = FontWeight.SemiBold), color = Color.White.copy(alpha = 0.7f), maxLines = 1, softWrap = false)
         Spacer(Modifier.height(4.dp))
-        PremiumDial(value, min, max, listOf("", ""), redFrom, text, unit, stops, live, Modifier.weight(1f))
+        PremiumDial(value, min, max, LABELS_NONE, redFrom, text, unit, stops, live, Modifier.weight(1f))
     }
 }
 
@@ -269,19 +329,20 @@ private fun RowScope.SmallDial(label: String, value: Float?, min: Float, max: Fl
 @Composable
 internal fun GaugesScreen(d: DriveValues, live: Boolean, modifier: Modifier, onClick: (() -> Unit)?) {
     val e = if (live) rememberEngineValues() else SAMPLE_ENGINE
+    val accent = rememberAccentStops()
     FullSurface(modifier, onClick, bare = live) {
         Column(Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                NamedDial("RPM", d.rpm, 0f, 8000f, (0..8).map { "$it" }, 6800f, rpmText(d.rpm), "rpm", RPM_STOPS, live)
-                NamedDial("Velocidad", d.speed, 0f, 200f, listOf("0", "50", "100", "150", "200"), null, speedText(d.speed), "km/h", BLUE_STOPS, live)
-                NamedDial("Acelerador", e.throttle, 0f, 100f, listOf("0", "25", "50", "75", "100"), null, fmt(e.throttle), "%", WARM_STOPS, live)
-                NamedDial("Carga del motor", e.load, 0f, 100f, listOf("0", "25", "50", "75", "100"), null, fmt(e.load), "%", WARM_STOPS, live)
+                NamedDial("RPM", d.rpm, 0f, 8000f, RPM_LABELS, 6800f, rpmText(d.rpm), "rpm", accent.second, live)
+                NamedDial("Velocidad", d.speed, 0f, 200f, LABELS_SPEED_200, null, speedText(d.speed), "km/h", accent.first, live)
+                NamedDial("Acelerador", e.throttle, 0f, 100f, LABELS_PERCENT, null, fmt(e.throttle), "%", WARM_STOPS, live)
+                NamedDial("Carga del motor", e.load, 0f, 100f, LABELS_PERCENT, null, fmt(e.load), "%", WARM_STOPS, live)
             }
             Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                NamedDial("Motor", e.coolant, 40f, 120f, listOf("40", "60", "80", "100", "120"), 105f, fmt(e.coolant), "°C", GREEN_STOPS, live)
-                NamedDial("Admisión", e.intake, 0f, 80f, listOf("0", "20", "40", "60", "80"), 60f, fmt(e.intake), "°C", GREEN_STOPS, live)
-                NamedDial("Ambiente", e.ambient, -10f, 50f, listOf("-10", "5", "20", "35", "50"), null, fmt(e.ambient), "°C", BLUE_STOPS, live)
-                NamedDial("Flujo de aire", e.maf, 0f, 60f, listOf("0", "15", "30", "45", "60"), null, fmt(e.maf, 1), "g/s", arrayOf(0f to Color(0xFF7B6CFF), 1f to Color(0xFFB18CFF)), live)
+                NamedDial("Motor", e.coolant, 40f, 120f, LABELS_COOLANT, 105f, fmt(e.coolant), "°C", GREEN_STOPS, live)
+                NamedDial("Admisión", e.intake, 0f, 80f, LABELS_INTAKE, 60f, fmt(e.intake), "°C", GREEN_STOPS, live)
+                NamedDial("Ambiente", e.ambient, -10f, 50f, LABELS_AMBIENT, null, fmt(e.ambient), "°C", accent.first, live)
+                NamedDial("Flujo de aire", e.maf, 0f, 60f, LABELS_MAF, null, fmt(e.maf, 1), "g/s", PURPLE_STOPS, live)
             }
         }
     }
@@ -303,14 +364,18 @@ private fun RowScope.NamedDial(label: String, value: Float?, min: Float, max: Fl
 
 // =================================================================== Desempeño (0 a 100)
 
-private enum class AccelPhase { WAIT_STOP, READY, RUNNING, DONE }
+internal enum class AccelPhase { WAIT_STOP, READY, RUNNING, DONE }
 
 /**
  * Cronómetro de 0 a 100 km/h: se arma al estar detenido, arranca al moverte y se detiene al llegar
  * a 100. Si frenas a medias o tarda más de 30 s, se cancela. Guarda el mejor tiempo.
+ *
+ * Precisión: la velocidad llega a saltos (el GPS una vez por segundo). Por eso el arranque y la
+ * llegada a 100 se calculan entre dos lecturas (interpolando), no en el momento de la lectura:
+ * antes el error podía ser de casi un segundo. Un tiempo imposible (un brinco del GPS) se descarta.
  */
 @Stable
-private class Accel0to100(best: Long) {
+internal class Accel0to100(best: Long) {
     var phase by mutableStateOf(AccelPhase.WAIT_STOP)
     var startAt = 0L
     var doneAt = 0L
@@ -318,20 +383,36 @@ private class Accel0to100(best: Long) {
     var result by mutableLongStateOf(0L)
     var best by mutableLongStateOf(best)
     var newRecord by mutableStateOf(false)
+    private var prevSpeed = Float.NaN
+    private var prevAt = 0L
 
     /** Devuelve true si hay un récord nuevo que guardar. */
     fun update(speed: Float?, now: Long): Boolean {
         val v = speed ?: return false
+        val pv = prevSpeed
+        val pt = prevAt
+        prevSpeed = v
+        prevAt = now
+        // El momento en que la velocidad pasó por [target], entre la lectura anterior y esta.
+        fun cross(target: Float): Long =
+            if (pv.isNaN() || v == pv) now
+            else pt + (((target - pv) / (v - pv)).coerceIn(0f, 1f) * (now - pt)).toLong()
         when (phase) {
             AccelPhase.WAIT_STOP, AccelPhase.DONE -> if (v <= 1f) phase = AccelPhase.READY
             AccelPhase.READY -> if (v > 1f) {
                 phase = AccelPhase.RUNNING
-                startAt = now
+                startAt = cross(START_KMH)
                 newRecord = false
             }
             AccelPhase.RUNNING -> when {
                 v >= 100f -> {
-                    result = now - startAt
+                    val time = cross(100f) - startAt
+                    if (time < MIN_VALID_MS) {
+                        // Ningún Civic hace eso: fue un brinco de la velocidad. No cuenta.
+                        phase = AccelPhase.WAIT_STOP
+                        return false
+                    }
+                    result = time
                     elapsed = result
                     doneAt = now
                     phase = AccelPhase.DONE
@@ -344,6 +425,13 @@ private class Accel0to100(best: Long) {
             }
         }
         return false
+    }
+
+    companion object {
+        /** Arrancar = pasar de 0.5 km/h (la mitad de la primera lectura en movimiento). */
+        const val START_KMH = 0.5f
+        /** Menos que esto es imposible para el carro: se descarta. */
+        const val MIN_VALID_MS = 5_000L
     }
 }
 
@@ -358,6 +446,7 @@ private fun secs(ms: Long) = "%.2f s".format(ms / 1000f)
 internal fun PerformanceScreen(d: DriveValues, live: Boolean, modifier: Modifier, onClick: (() -> Unit)?) {
     val c = LocalContext.current.container
     val e = if (live) rememberEngineValues() else SAMPLE_ENGINE
+    val accent = rememberAccentStops()
     val t = remember { Accel0to100(if (live) c.launcherPrefs.best0to100Ms else 7_480L) }
     var showResult by remember { mutableStateOf(false) }
     // El cronómetro solo existe si lo activas (botón de arriba); apagado, ni siquiera vigila la velocidad.
@@ -386,42 +475,17 @@ internal fun PerformanceScreen(d: DriveValues, live: Boolean, modifier: Modifier
     val fr by gaugeFraction(d.rpm, 8000f, live)
     val paint = rememberLabelPaint()
     FullSurface(modifier, onClick, bare = live) {
+        Canvas(Modifier.fillMaxSize().padding(vertical = 6.dp, horizontal = 4.dp).staticLayer(live)) {
+            val r = size.height / 2f
+            if (r < 70.dp.toPx() || size.width < 4 * r) return@Canvas
+            perfSideStatic(paint, Offset(r, size.height / 2f), r, 1f, SPEED_LABELS_220, null)
+            perfSideStatic(paint, Offset(size.width - r, size.height / 2f), r, -1f, RPM_LABELS, PERF_RED)
+        }
         Canvas(Modifier.fillMaxSize().padding(vertical = 6.dp, horizontal = 4.dp)) {
             val r = size.height / 2f
             if (r < 70.dp.toPx() || size.width < 4 * r) return@Canvas
-            val cy = size.height / 2f
-            fun side(cn: Offset, sign: Float, f: Float, labels: List<String>, red: Float?, stops: Array<Pair<Float, Color>>) {
-                val start = 90f
-                val sweep = 180f * sign
-                // Sombra detrás del arco: se lee sobre cualquier fondo.
-                drawCircle(Brush.radialGradient(0f to Color.Transparent, 0.72f to Color.Transparent, 0.86f to Color.Black.copy(alpha = 0.45f), 1f to Color.Transparent, center = cn, radius = r + 8.dp.toPx()), r + 8.dp.toPx(), cn)
-                ticks(cn, r - 3.dp.toPx(), start, sweep, (labels.size - 1) * 5,
-                    len = { if (it % 5 == 0) 14.dp.toPx() else 6.dp.toPx() },
-                    width = { if (it % 5 == 0) 2.dp.toPx() else 1.dp.toPx() },
-                ) { _, at ->
-                    when {
-                        red != null && at >= red -> G_RED.copy(alpha = 0.9f)
-                        at <= f -> Color.White.copy(alpha = 0.9f)
-                        else -> Color.White.copy(alpha = 0.35f)
-                    }
-                }
-                scaleLabels(paint, cn, r - 34.dp.toPx(), start, sweep, labels, Color.White.copy(alpha = 0.8f), 15.dp.toPx())
-                val band = r - 52.dp.toPx()
-                val box = Offset(cn.x - band, cn.y - band)
-                val bs = Size(2 * band, 2 * band)
-                drawArc(Color.White.copy(alpha = 0.06f), start, sweep, false, box, bs, style = Stroke(5.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
-                if (f > 0.003f) {
-                    val col = if (red != null && f >= red) G_RED else lerp(stops.first().second, stops.last().second, f)
-                    drawArc(col.copy(alpha = 0.12f), start, sweep * f, false, box, bs, style = Stroke(26.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
-                    drawArc(col.copy(alpha = 0.25f), start, sweep * f, false, box, bs, style = Stroke(12.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
-                    drawArc(col, start, sweep * f, false, box, bs, style = Stroke(5.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
-                    val p = polar(cn, band, start + sweep * f)
-                    drawCircle(col.copy(alpha = 0.4f), 11.dp.toPx(), p)
-                    drawCircle(Color.White, 5.dp.toPx(), p)
-                }
-            }
-            side(Offset(r, cy), 1f, fs, (0..11).map { "${it * 20}" }, null, BLUE_STOPS)
-            side(Offset(size.width - r, cy), -1f, fr, (0..8).map { "$it" }, 6800f / 8000f, RPM_STOPS)
+            perfSideMoving(Offset(r, size.height / 2f), r, 1f, fs, SPEED_LABELS_220.size, null, accent.first)
+            perfSideMoving(Offset(size.width - r, size.height / 2f), r, -1f, fr, RPM_LABELS.size, PERF_RED, accent.second)
         }
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(0.28f), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -430,7 +494,13 @@ internal fun PerformanceScreen(d: DriveValues, live: Boolean, modifier: Modifier
             }
             Column(Modifier.weight(0.44f).fillMaxHeight().padding(vertical = 22.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 if (live) {
-                    TimerToggle(timerOn, t.best) {
+                    TimerToggle(timerOn, t.best, onResetBest = {
+                        if (t.best > 0) {
+                            t.best = 0L
+                            c.launcherPrefs.best0to100Ms = 0L
+                            com.civiclauncher.app.launcher.data.Notices.show("Récord borrado")
+                        }
+                    }) {
                         c.launcherPrefs.setAccelTimer(!timerOn)
                         t.phase = AccelPhase.WAIT_STOP
                         showResult = false
@@ -449,15 +519,24 @@ internal fun PerformanceScreen(d: DriveValues, live: Boolean, modifier: Modifier
 
 /** Botón chico para activar o quitar el cronómetro de 0 a 100 (con tu récord si lo hay). */
 @Composable
-private fun TimerToggle(on: Boolean, best: Long, onToggle: () -> Unit) {
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun TimerToggle(on: Boolean, best: Long, onResetBest: () -> Unit, onToggle: () -> Unit) {
     val color = if (on) G_GREEN else Color.White.copy(alpha = 0.6f)
     Row(
         Modifier
             .clip(RoundedCornerShape(50))
             .background(if (on) G_GREEN.copy(alpha = 0.14f) else Color(0x99101317))
             .border(1.dp, color.copy(alpha = 0.35f), RoundedCornerShape(50))
-            .clickable(role = Role.Button, onClickLabel = if (on) "Quitar el cronómetro" else "Activar el cronómetro", onClick = onToggle)
-            .padding(horizontal = 14.dp, vertical = 6.dp),
+            .combinedClickable(
+                role = Role.Button,
+                onClickLabel = if (on) "Quitar el cronómetro" else "Activar el cronómetro",
+                // Mantener presionado: borrar el récord (por si quedó uno equivocado).
+                onLongClickLabel = "Borrar el récord",
+                onLongClick = onResetBest,
+                onClick = onToggle,
+            )
+            // Más alta para atinarle en el carro (antes ~28 dp).
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(8.dp).clip(androidx.compose.foundation.shape.CircleShape).background(if (on) G_GREEN else Color.White.copy(alpha = 0.3f)))
@@ -471,11 +550,48 @@ private fun TimerToggle(on: Boolean, best: Long, onToggle: () -> Unit) {
     }
 }
 
+private const val PERF_RED = 6800f / 8000f
+
+/** Lo fijo de un arco lateral de Desempeño: sombra, escala completa y números. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.perfSideStatic(paint: android.graphics.Paint, cn: Offset, r: Float, sign: Float, labels: List<String>, red: Float?) {
+    val sweep = 180f * sign
+    // Sombra detrás del arco: se lee sobre cualquier fondo.
+    drawCircle(Brush.radialGradient(0f to Color.Transparent, 0.72f to Color.Transparent, 0.86f to Color.Black.copy(alpha = 0.45f), 1f to Color.Transparent, center = cn, radius = r + 8.dp.toPx()), r + 8.dp.toPx(), cn)
+    ticks(cn, r - 3.dp.toPx(), 90f, sweep, (labels.size - 1) * 5,
+        len = { if (it % 5 == 0) 14.dp.toPx() else 6.dp.toPx() },
+        width = { if (it % 5 == 0) 2.dp.toPx() else 1.dp.toPx() },
+    ) { _, at -> if (red != null && at >= red) G_RED.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.35f) }
+    scaleLabels(paint, cn, r - 34.dp.toPx(), 90f, sweep, labels, Color.White.copy(alpha = 0.8f), 15.dp.toPx())
+    val band = r - 52.dp.toPx()
+    drawArc(Color.White.copy(alpha = 0.06f), 90f, sweep, false, Offset(cn.x - band, cn.y - band), Size(2 * band, 2 * band), style = Stroke(5.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
+}
+
+/** Lo que se mueve de un arco lateral: marcas alcanzadas, arco de luz y punta. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.perfSideMoving(cn: Offset, r: Float, sign: Float, f: Float, labelCount: Int, red: Float?, stops: Array<Pair<Float, Color>>) {
+    val sweep = 180f * sign
+    ticks(cn, r - 3.dp.toPx(), 90f, sweep, (labelCount - 1) * 5,
+        len = { if (it % 5 == 0) 14.dp.toPx() else 6.dp.toPx() },
+        width = { if (it % 5 == 0) 2.dp.toPx() else 1.dp.toPx() },
+    ) { _, at -> if (at <= f && (red == null || at < red)) Color.White.copy(alpha = 0.85f) else null }
+    if (f <= 0.003f) return
+    val band = r - 52.dp.toPx()
+    val box = Offset(cn.x - band, cn.y - band)
+    val bs = Size(2 * band, 2 * band)
+    val col = if (red != null && f >= red) G_RED else lerp(stops.first().second, stops.last().second, f)
+    val cap = androidx.compose.ui.graphics.StrokeCap.Round
+    drawArc(col.copy(alpha = 0.12f), 90f, sweep * f, false, box, bs, style = Stroke(26.dp.toPx(), cap = cap))
+    drawArc(col.copy(alpha = 0.25f), 90f, sweep * f, false, box, bs, style = Stroke(12.dp.toPx(), cap = cap))
+    drawArc(col, 90f, sweep * f, false, box, bs, style = Stroke(5.dp.toPx(), cap = cap))
+    val p = polar(cn, band, 90f + sweep * f)
+    drawCircle(col.copy(alpha = 0.4f), 11.dp.toPx(), p)
+    drawCircle(Color.White, 5.dp.toPx(), p)
+}
+
 /** Centro de Desempeño de siempre: la marcha grande, temperaturas y el acelerador. */
 @Composable
 private fun DrivePanel(d: DriveValues, e: EngineValues, live: Boolean) {
     Text("MARCHA", style = Civic.type.caption.copy(fontSize = 11.sp, letterSpacing = 0.2.em, fontWeight = FontWeight.SemiBold), color = Color.White.copy(alpha = 0.55f))
-    Text(d.gear?.toString() ?: "N", style = big(96, FontWeight.Light).copy(shadow = androidx.compose.ui.graphics.Shadow(G_SKY.copy(alpha = 0.6f), blurRadius = 24f)), color = Color.White)
+    Text(d.gear?.toString() ?: "–", style = big(96, FontWeight.Light).copy(shadow = androidx.compose.ui.graphics.Shadow(G_SKY.copy(alpha = 0.6f), blurRadius = 24f)), color = Color.White)
     Spacer(Modifier.height(10.dp))
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0x99101317)).border(1.dp, Color.White.copy(alpha = 0.07f), RoundedCornerShape(16.dp)).padding(vertical = 10.dp)) {
         TempCell("Motor", e.coolant, 105f)
@@ -545,9 +661,8 @@ private fun ThrottleArc(throttle: Float?, live: Boolean, modifier: Modifier) {
                 if (r < 8.dp.toPx()) return@Canvas
                 val c = Offset(size.width / 2f, size.height)
                 plainArc(c, r, 180f, 180f, Color.White.copy(alpha = 0.08f), 6.dp.toPx())
-                val stops = arrayOf(0f to G_GREEN, 0.6f to G_AMBER, 1f to G_ORANGE)
-                gradientArc(c, r, 180f, 180f, 180f * f, 18.dp.toPx(), stops, alpha = 0.14f)
-                gradientArc(c, r, 180f, 180f, 180f * f, 6.dp.toPx(), stops)
+                gradientArc(c, r, 180f, 180f, 180f * f, 18.dp.toPx(), THROTTLE_STOPS, alpha = 0.14f)
+                gradientArc(c, r, 180f, 180f, 180f * f, 6.dp.toPx(), THROTTLE_STOPS)
                 if (f > 0.005f) {
                     val p = polar(c, r, 180f + 180f * f)
                     drawCircle(G_ORANGE.copy(alpha = 0.4f), 10.dp.toPx(), p)

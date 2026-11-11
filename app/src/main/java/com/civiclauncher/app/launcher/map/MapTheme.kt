@@ -10,7 +10,10 @@ import org.mapsforge.map.rendertheme.XmlRenderTheme
  */
 object MapTheme {
     /** Sube este número si cambias el estilo: así no se usan mosaicos viejos guardados en disco. */
-    const val VERSION = 3
+    const val VERSION = 4
+
+    /** Final del nombre de las carpetas de mosaicos de este estilo ("-sl": sin nombres de calles dentro). */
+    const val CACHE_SUFFIX = "-v$VERSION-sl"
 
     private val NIGHT = mapOf(
         "land" to "#172030",

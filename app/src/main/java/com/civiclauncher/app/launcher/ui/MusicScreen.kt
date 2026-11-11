@@ -108,7 +108,8 @@ fun MusicScreen(onOpen: (Dest) -> Unit) {
         }
         Spacer(Modifier.height(Civic.space.m))
         SourceSwitch(
-            current = if (now?.source == MusicSource.RADIO) MusicSource.RADIO else MusicSource.BLUETOOTH,
+            // La radio suena sin "canción": se reconoce por el estado (antes siempre marcaba Bluetooth).
+            current = if (now?.source == MusicSource.RADIO || (state as? MediaState.Idle)?.source == MusicSource.RADIO) MusicSource.RADIO else MusicSource.BLUETOOTH,
             onBluetooth = { if (!c.media.playBluetooth()) openMusicApp(ctx, MusicSource.BLUETOOTH, VendorApps.BLUETOOTH) },
             onRadio = { onOpen(Dest.RADIO) },
             modifier = Modifier.align(Alignment.CenterHorizontally).width(380.dp).height(50.dp),
@@ -463,8 +464,15 @@ internal fun SourceSwitch(
             .bevelBorder(shape)
             .padding(4.dp),
     ) {
-        Segment(P.BluetoothLight, P.BluetoothFill, "Bluetooth", BarColors.INDIGO, current == MusicSource.BLUETOOTH, onBluetooth)
-        Segment(P.RadioLight, P.RadioFill, "Radio", BarColors.RED, current == MusicSource.RADIO, onRadio)
+        // Cada toque queda en el registro (adb logcat -s CivicUI): sirve para diagnosticar en la pantalla.
+        Segment(P.BluetoothLight, P.BluetoothFill, "Bluetooth", BarColors.INDIGO, current == MusicSource.BLUETOOTH) {
+            android.util.Log.i("CivicUI", "selector: Bluetooth")
+            onBluetooth()
+        }
+        Segment(P.RadioLight, P.RadioFill, "Radio", BarColors.RED, current == MusicSource.RADIO) {
+            android.util.Log.i("CivicUI", "selector: Radio")
+            onRadio()
+        }
     }
 }
 

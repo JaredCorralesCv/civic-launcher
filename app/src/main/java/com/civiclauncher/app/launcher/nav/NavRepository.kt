@@ -39,6 +39,8 @@ data class NavProgress(
     val position: LatLong? = null,
     /** Hacia dónde va la ruta en ese punto (grados, 0 = norte). */
     val bearing: Float? = null,
+    /** Te saliste y no se pudo calcular una ruta nueva (faltan datos de la zona): se sigue intentando. */
+    val noRoute: Boolean = false,
 )
 
 sealed interface NavState {
@@ -128,6 +130,10 @@ class NavRepository(
         redirectJob?.cancel()
         redirecting = false
         simulating = simulate
+        _resumable.value = null
+        // Un recorrido simulado no se ofrece después como ruta por continuar.
+        if (simulate) clearActive() else saveActive(dest)
+        prefetchRoute(route)
         _state.value = NavState.Navigating(dest, route, progressOf(route, 0, 0.0, null))
         job = scope.launch { follow(dest, route, if (simulate) simulated(route) else gps.speed) }
     }
@@ -187,7 +193,72 @@ class NavRepository(
         job = null
         redirectJob?.cancel()
         redirecting = false
+        prefetchJob?.cancel()
+        clearActive()
         _state.value = NavState.Idle
+    }
+
+    // ------------------------------------------------------------------ Continuar la ruta
+
+    /** Si Android cerró Civic a medio camino (al quitar la llave), el destino que quedó pendiente. */
+    val resumable: StateFlow<Place?> get() = _resumable.asStateFlow()
+
+    /** Vuelve a calcular desde donde estás hacia el destino que quedó pendiente, y arranca. */
+    fun continueRoute() {
+        val place = _resumable.value ?: return
+        _resumable.value = null
+        job?.cancel()
+        _state.value = NavState.Preview(place)
+        job = scope.launch {
+            val from = currentPosition()
+            val route = try {
+                from?.let { engine.route(it, place.point, gps.speed.value.bearing) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            // Sin ruta (faltan datos, sin GPS): la vista previa explica qué pasó y ofrece opciones.
+            if (route != null) drive(place, route, simulate = false) else preview(place)
+        }
+    }
+
+    fun dismissResume() {
+        _resumable.value = null
+        clearActive()
+    }
+
+    private fun saveActive(p: Place) {
+        // commit (no apply): al quitar la llave la pantalla se apaga de golpe.
+        sp.edit().putString(KEY_ACTIVE, p.toJson().toString()).putLong(KEY_ACTIVE_AT, System.currentTimeMillis()).commit()
+    }
+
+    private fun clearActive() {
+        sp.edit().remove(KEY_ACTIVE).remove(KEY_ACTIVE_AT).commit()
+    }
+
+    private fun loadActive(): Place? {
+        val p = loadPlace(KEY_ACTIVE) ?: return null
+        val age = System.currentTimeMillis() - sp.getLong(KEY_ACTIVE_AT, 0L)
+        val alreadyThere = map.lastPosition()?.let { meters(it, p.point) < ARRIVED_M * 5 } == true
+        if (age > RESUME_MAX_MS || alreadyThere) {
+            clearActive()
+            return null
+        }
+        return p
+    }
+
+    // ------------------------------------------------------------------ Precarga
+
+    private var prefetchJob: Job? = null
+
+    /** Con la ruta lista, los mosaicos del recorrido se van dibujando con calma, a disco. */
+    private fun prefetchRoute(route: Route) {
+        prefetchJob?.cancel()
+        prefetchJob = scope.launch {
+            kotlinx.coroutines.delay(PREFETCH_DELAY_MS)
+            com.civiclauncher.app.launcher.map.SharedMap.prefetch(route.points)
+        }
     }
 
     // ------------------------------------------------------------------ Mientras navegas
@@ -196,13 +267,22 @@ class NavRepository(
         var route = first
         var segment = 0
         var offRoute = 0
+        val backoff = RerouteBackoff()
+        var noRoute = false
         var lastStreetLookup: Maneuver? = null
         var nextStreet: String? = null
         source.collect { fix ->
             val pos = fix.position() ?: return@collect
             val snap = snap(route, pos, segment)
-            if (snap.distance > OFF_ROUTE_M) offRoute++ else offRoute = 0
-            if (offRoute >= OFF_ROUTE_FIXES) {
+            val off = snap.distance > OFF_ROUTE_M
+            if (off) {
+                offRoute++
+            } else {
+                offRoute = 0
+                backoff.reset()
+                noRoute = false
+            }
+            if (offRoute >= OFF_ROUTE_FIXES && backoff.canTry(android.os.SystemClock.elapsedRealtime())) {
                 // Te saliste: nueva ruta desde aquí, hacia donde ya vas.
                 _state.value = (_state.value as? NavState.Navigating)?.copy(rerouting = true) ?: return@collect
                 val again = runCatching { engine.route(pos, dest.point, fix.bearing) }.getOrNull()
@@ -210,20 +290,34 @@ class NavRepository(
                     route = again
                     segment = 0
                     lastStreetLookup = null
+                    offRoute = 0
+                    backoff.reset()
+                    noRoute = false
+                    prefetchRoute(again)
+                } else {
+                    // Cada intento es cálculo pesado: si falló, se espera cada vez más.
+                    backoff.failed(android.os.SystemClock.elapsedRealtime())
+                    noRoute = true
                 }
-                offRoute = 0
                 return@collect
             }
             segment = snap.segment
             val along = route.cumulative[segment] + snap.along
             val remaining = (route.totalMeters - along).coerceAtLeast(0.0)
-            if (remaining < ARRIVED_M) {
+            if (remaining < ARRIVED_M && !off) {
                 _state.value = NavState.Arrived(dest)
+                clearActive()
+                prefetchJob?.cancel()
                 // Llegaste: se deja de seguir el GPS (y el recorrido simulado termina).
                 throw kotlinx.coroutines.CancellationException("llegó")
             }
             val (onRoute, heading) = pointAt(route, along)
-            val progress = progressOf(route, segment, along, nextStreet).copy(position = onRoute, bearing = heading)
+            // Fuera de la ruta el carro se dibuja donde está de verdad, no pegado a una calle que ya dejó.
+            val progress = progressOf(route, segment, along, nextStreet).copy(
+                position = if (off) pos else onRoute,
+                bearing = if (off) fix.bearing ?: heading else heading,
+                noRoute = noRoute,
+            )
             // El nombre de la calle de la siguiente vuelta se busca una vez por vuelta (lee el mapa).
             val next = progress.next
             if (next != null && next != lastStreetLookup) {
@@ -300,6 +394,7 @@ class NavRepository(
     val work: StateFlow<Place?> = _work.asStateFlow()
     private val _recent = MutableStateFlow(loadRecent())
     val recent: StateFlow<List<Place>> = _recent.asStateFlow()
+    private val _resumable = MutableStateFlow(loadActive())
 
     fun setHome(p: Place) = savePlace("home", p).also { _home.value = p }
     fun setWork(p: Place) = savePlace("work", p).also { _work.value = p }
@@ -408,5 +503,11 @@ class NavRepository(
         const val MAX_RECENT = 6
         /** Velocidad del recorrido simulado. */
         const val SIM_KMH = 50.0
+        const val KEY_ACTIVE = "active"
+        const val KEY_ACTIVE_AT = "active_at"
+        /** Pasado este tiempo ya no tiene sentido ofrecer la ruta de antes. */
+        const val RESUME_MAX_MS = 6 * 3_600_000L
+        /** Que primero termine de calcular y de dibujar la vista normal. */
+        const val PREFETCH_DELAY_MS = 5_000L
     }
 }

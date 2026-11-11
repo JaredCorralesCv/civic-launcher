@@ -56,12 +56,12 @@ import com.civiclauncher.obd.Reading
 @Composable
 fun rememberSpeed(): Pair<Double?, Boolean> {
     val c = LocalContext.current.container
-    val gps = c.gps.speed.collectAsStateWithLifecycle()
+    val gps = c.gps.speed.collectWhenVisible()
     // Del GPS solo la velocidad entera: cada ubicación nueva (una por segundo, aunque estés parado)
     // ya no vuelve a dibujar la tarjeta de Vehículo si el número que se ve es el mismo.
     val gpsKmh by remember { androidx.compose.runtime.derivedStateOf { gps.value.kmh?.let { Math.round(it).toDouble() } } }
-    val obdState by c.obd.state.collectAsStateWithLifecycle()
-    val obdData = c.obd.data.collectAsStateWithLifecycle()
+    val obdState by c.obd.state.collectWhenVisible()
+    val obdData = c.obd.data.collectWhenVisible()
     val connected = obdState is EngineState.Connected
     // Solo la velocidad entera: los otros 30+ datos del OBD no deben redibujar quien la muestra.
     val obd by remember(connected) {
@@ -74,7 +74,7 @@ fun rememberSpeed(): Pair<Double?, Boolean> {
 
 /** Un dato del OBD solo se muestra si llegó hace menos de 10 s; si no, es viejo y engañaría. */
 fun Reading?.fresh(maxAgeMs: Long = 10_000): Reading? =
-    this?.takeIf { System.currentTimeMillis() - it.atMs < maxAgeMs }
+    this?.takeIf { android.os.SystemClock.elapsedRealtime() - it.atMs < maxAgeMs }
 
 fun obdStatus(state: EngineState, config: ObdConfig): Pair<String, Tone> = when {
     config.mode == ObdMode.NONE -> "OBD sin configurar" to Tone.Neutral

@@ -4,8 +4,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import com.civiclauncher.obd.Diagnostics
+import com.civiclauncher.obd.PollDemand
+import com.civiclauncher.obd.TimeMark
 import com.civiclauncher.obd.EngineState
 import com.civiclauncher.obd.FuelModel
 import com.civiclauncher.obd.AlertFilter
@@ -94,6 +97,7 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
     /** Lo calculado al momento: consumo, marcha y avisos. */
     val live: StateFlow<LiveDerived> = _live.asStateFlow()
     private var lastSaveMs = 0L
+    private var lastTripPublish = 0L
     /** Avisos con tolerancia (no parpadean ni saltan por un bajón de un segundo). */
     private val alertFilter = AlertFilter()
     /** Marcha que aprende las relaciones de tu carro; se guardan para la próxima vez. */
@@ -101,7 +105,11 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
         tripPrefs.getString("gear_ratios", null)?.split(',')?.mapNotNull { it.toDoubleOrNull() }?.toDoubleArray()
             ?: com.civiclauncher.obd.GearEstimator.defaultRatios(),
     )
-    private var lastRunningMs = tripPrefs.getLong("last_running", 0L)
+    private val bootId by lazy { runCatching { java.io.File("/proc/sys/kernel/random/boot_id").readText().trim() }.getOrDefault("") }
+    // Datos guardados por versiones anteriores: solo la hora (sin encendido), se comparan por la hora.
+    private var lastRunning: TimeMark? = tripPrefs.getLong("last_running", 0L).takeIf { it != 0L }?.let {
+        TimeMark(tripPrefs.getString("last_boot", "").orEmpty(), tripPrefs.getLong("last_running_e", 0L), it)
+    }
 
     private fun loadTrip() = TripStats(
         startedAtMs = tripPrefs.getLong("started", 0L),
@@ -117,21 +125,31 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
             .putLong("started", s.startedAtMs).putLong("driving", s.drivingMs)
             .putFloat("km", s.distanceKm.toFloat()).putFloat("liters", s.fuelLiters.toFloat())
             .putFloat("max", s.maxSpeedKmh.toFloat()).putLong("idle", s.idleMs)
-            .putLong("last_running", lastRunningMs)
+            .putLong("last_running", lastRunning?.wallMs ?: 0L)
+            .putLong("last_running_e", lastRunning?.elapsedMs ?: 0L)
+            .putString("last_boot", lastRunning?.bootId)
             .putString("gear_ratios", gears.learned.joinToString(",") { "%.2f".format(java.util.Locale.US, it) })
             .apply()
     }
 
     private fun onData(d: VehicleData) {
-        val now = System.currentTimeMillis()
+        // El mismo reloj que las lecturas (ver apply): no salta cuando el GPS corrige la hora.
+        val now = SystemClock.elapsedRealtime()
+        val wall = System.currentTimeMillis()
         val running = (d[Pids.RPM].freshAt(now)?.value ?: 0.0) > 300
         if (running) {
+            val mark = TimeMark(bootId, now, wall)
             // Más de 30 min con el motor apagado = viaje nuevo (como la computadora de muchos carros).
-            if (lastRunningMs != 0L && now - lastRunningMs > NEW_TRIP_AFTER_MS) trip.reset()
-            lastRunningMs = now
+            if (lastRunning?.let { it.msUntil(mark) > NEW_TRIP_AFTER_MS } == true) trip.reset()
+            lastRunning = mark
         }
-        val s = trip.update(d, now)
-        _tripStats.value = s
+        val s = trip.update(d, now, wall)
+        // A la pantalla, una vez por segundo: el viaje cambia en cada lectura del OBD (decenas por
+        // segundo) y cada aviso volvía a armar las tarjetas que lo muestran.
+        if (now - lastTripPublish >= 1_000) {
+            lastTripPublish = now
+            _tripStats.value = s
+        }
         if (now - lastSaveMs > 15_000) {
             lastSaveMs = now
             saveTrip(s)
@@ -216,8 +234,34 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
         }
         // El ciclo del OBD (decenas de preguntas y respuestas por segundo) corre en su propio hilo:
         // la pantalla solo recibe los resultados.
-        val e = engine.value ?: ObdEngine(transportFactory = { transportFor(c) }, scope = engineScope).also { engine.value = it }
+        val e = engine.value
+            ?: ObdEngine(transportFactory = { transportFor(c) }, scope = engineScope, clock = SystemClock::elapsedRealtime).also { engine.value = it }
+        e.demand = demand()
         e.start()
+    }
+
+    // ------------------------------------------------------------------ Cuánto se le pide al carro
+
+    private var foreground = true
+    private var liveScreen = true
+    private var sensorsOpen = false
+
+    /** Con otra app al frente (Android Auto) el OBD no compite por CPU y Bluetooth. */
+    fun setForeground(value: Boolean) { foreground = value; updateDemand() }
+
+    /** ¿La pantalla actual de Civic muestra datos del motor? */
+    fun setLiveScreen(value: Boolean) { liveScreen = value; updateDemand() }
+
+    fun setSensorsOpen(value: Boolean) { sensorsOpen = value; updateDemand() }
+
+    private fun demand() = when {
+        !foreground || !liveScreen -> PollDemand.BACKGROUND
+        sensorsOpen -> PollDemand.ALL
+        else -> PollDemand.LIVE
+    }
+
+    private fun updateDemand() {
+        engine.value?.demand = demand()
     }
 
     private val engineScope = CoroutineScope(scope.coroutineContext + Dispatchers.Default)

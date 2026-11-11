@@ -51,7 +51,7 @@
     </rule>
 
     <!-- Edificios: solo de cerca y muy sutiles -->
-    <rule e="way" k="building" v="*" zoom-min="16">
+    <rule e="way" k="building" v="*" zoom-min="17">
         <area fill="{{building}}" />
     </rule>
 

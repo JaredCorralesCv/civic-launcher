@@ -66,8 +66,6 @@ import org.mapsforge.core.model.LatLong
  * Nombres de la caché de mosaicos del mapa. Si cambia el estilo (capas visibles), sube la versión:
  * así no se muestran mosaicos viejos guardados en disco.
  */
-const val MAP_CACHE_CARD = "map-card-v2"
-const val MAP_CACHE_FULL = "map-full-v2"
 
 /** Centro de México: solo si no hay GPS ni una posición guardada. */
 val MEXICO_CENTER = LatLong(23.6345, -102.5528)
@@ -77,6 +75,13 @@ fun mapCenter(gps: GpsSpeed, last: LatLong?): Pair<LatLong, Boolean> {
     val lat = gps.lat
     val lon = gps.lon
     return if (lat != null && lon != null) LatLong(lat, lon) to gps.fresh else (last ?: MEXICO_CENTER) to false
+}
+
+/** ¿Va lo bastante rápido como para alejar el mapa un nivel? */
+@Composable
+internal fun rememberFastForMap(kmh: Float?): Boolean {
+    val last = remember { booleanArrayOf(false) }
+    return isFastForMap(last[0], kmh).also { last[0] = it }
 }
 
 /** Calle actual: se recalcula cuando avanzas unos ~20 m. */
@@ -133,7 +138,6 @@ fun MapScreen(night: Boolean) {
         Box(Modifier.fillMaxSize().clip(mapShape)) {
             CivicMap(
                 file = ready.file,
-                cacheName = MAP_CACHE_FULL,
                 // Navegando, el carro va pegado a la ruta (no tiembla fuera de la calle).
                 center = navigating?.progress?.position ?: center,
                 bearing = navigating?.progress?.bearing ?: gps.bearing,
@@ -155,6 +159,7 @@ fun MapScreen(night: Boolean) {
                     picking = true
                     handle.moveTo(p)
                 },
+                fast = rememberFastForMap(gps.kmh),
             )
             if (picking) CenterPin(Modifier.align(Alignment.Center))
             // El borde va encima del mapa (el mapa es una vista de Android y taparía un borde de fondo).

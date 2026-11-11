@@ -1,7 +1,9 @@
 package com.civiclauncher.app.launcher.ui
 
 import androidx.compose.foundation.Image
+import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -23,8 +25,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,21 +40,25 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.civiclauncher.app.container
 import com.civiclauncher.app.launcher.data.LaunchableApp
+import com.civiclauncher.app.ui.design.ButtonKind
 import com.civiclauncher.app.ui.design.Civic
+import com.civiclauncher.app.ui.design.CivicButton
 
 @Composable
 fun AppsScreen() {
     val ctx = LocalContext.current
     val repo = ctx.container.apps
     val apps by repo.apps.collectAsStateWithLifecycle()
+    /** La app que mantuviste presionada: sus opciones se muestran encima. */
+    var menuFor by remember { mutableStateOf<LaunchableApp?>(null) }
 
-    Column(Modifier.fillMaxSize().padding(top = Civic.space.m)) {
+    Box(Modifier.fillMaxSize()) { Column(Modifier.fillMaxSize().padding(top = Civic.space.m)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = PAGE_GUTTER), verticalAlignment = Alignment.Bottom) {
             Text("Apps", style = Civic.type.headline, color = Civic.colors.text)
             Spacer(Modifier.size(Civic.space.m))
             Text("${apps.size}", style = Civic.type.title, color = Civic.colors.textFaint)
             Spacer(Modifier.weight(1f))
-            Text("Mantén presionada una app para ver su información", style = Civic.type.caption, color = Civic.colors.textFaint)
+            Text("Mantén presionada una app para añadirla a Accesos", style = Civic.type.caption, color = Civic.colors.textFaint)
         }
         LazyVerticalGrid(
             columns = GridCells.Adaptive(136.dp),
@@ -60,7 +68,39 @@ fun AppsScreen() {
             modifier = Modifier.fillMaxSize(),
         ) {
             items(apps, key = { "${it.pkg}/${it.activity}" }) { app ->
-                AppCell(app, onClick = { repo.launch(app) }, onLongClick = { repo.openAppInfo(app.pkg) })
+                AppCell(app, onClick = { repo.launch(app) }, onLongClick = { menuFor = app })
+            }
+        }
+    }
+        menuFor?.let { app -> AppMenu(app, onClose = { menuFor = null }) }
+    }
+}
+
+/** Opciones de una app: ponerla en el widget Accesos o ver su información. */
+@Composable
+private fun AppMenu(app: LaunchableApp, onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    val repo = ctx.container.apps
+    val favorite = remember(app) { repo.isFavorite(app) }
+    Box(
+        Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f)).clickable(onClick = onClose),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier
+                .clip(RoundedCornerShape(Civic.radii.xl))
+                .background((Civic.colors.opaque ?: Civic.colors).surface)
+                .clickable(enabled = false) {}
+                .padding(Civic.space.l),
+            verticalArrangement = Arrangement.spacedBy(Civic.space.m),
+        ) {
+            Text(app.label, style = Civic.type.title, color = Civic.colors.text)
+            Row(horizontalArrangement = Arrangement.spacedBy(Civic.space.m)) {
+                CivicButton(if (favorite) "Quitar de Accesos" else "Añadir a Accesos", {
+                    if (!repo.toggleFavorite(app)) Toast.makeText(ctx, "Accesos ya tiene 6 apps: quita una primero", Toast.LENGTH_SHORT).show()
+                    onClose()
+                }, kind = ButtonKind.Primary)
+                CivicButton("Información", { repo.openAppInfo(app.pkg); onClose() }, kind = ButtonKind.Secondary)
             }
         }
     }

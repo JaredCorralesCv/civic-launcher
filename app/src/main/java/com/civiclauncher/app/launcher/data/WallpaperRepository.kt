@@ -37,18 +37,27 @@ class WallpaperRepository(private val context: Context, private val scope: Corou
     val selected: StateFlow<String?> = _selected.asStateFlow()
 
     private val _image = MutableStateFlow<ImageBitmap?>(null)
-    /** El fondo ya listo para dibujar, o null mientras carga / sin fondo. */
+    /** El fondo con su velo ya pintado y opaco, listo para dibujar; null mientras carga o sin fondo. */
     val image: StateFlow<ImageBitmap?> = _image.asStateFlow()
 
-    private val _brightness = MutableStateFlow(0.3f)
-    /** Qué tan claro es el fondo (0 = negro, 1 = blanco), para oscurecerlo lo justo y que el texto se lea. */
-    val brightness: StateFlow<Float> = _brightness.asStateFlow()
+    private val _accent = MutableStateFlow<Int?>(null)
+    /** Color principal del fondo elegido, listo para usarse de acento; null si no hay o es casi gris. */
+    val accent: StateFlow<Int?> = _accent.asStateFlow()
+
+    /** Tema actual (null hasta que la pantalla lo diga: así no se carga dos veces al arrancar). */
+    private var night: Boolean? = null
 
     private val thumbs = HashMap<String, ImageBitmap>()
     private var loadJob: Job? = null
 
     init {
         refresh()
+    }
+
+    /** Cambió el tema: el velo es distinto, así que se vuelve a preparar el fondo desde el archivo. */
+    fun setNight(value: Boolean) {
+        if (night == value) return
+        night = value
         loadSelected()
     }
 
@@ -77,15 +86,45 @@ class WallpaperRepository(private val context: Context, private val scope: Corou
         val name = _selected.value
         if (name == null) {
             _image.value = null
+            _accent.value = null
             return
         }
+        val isNight = night ?: return
         loadJob = scope.launch {
             val dm = context.resources.displayMetrics
-            val bmp = withContext(Dispatchers.Default) { decodeCover(File(dir, name), dm.widthPixels, dm.heightPixels) }
-            if (bmp != null) _brightness.value = withContext(Dispatchers.Default) { luminance(bmp) }
+            val bmp = withContext(Dispatchers.Default) {
+                decodeCover(File(dir, name), dm.widthPixels, dm.heightPixels)?.let {
+                    // Antes del velo: el color es el del fondo tal cual.
+                    _accent.value = accentOf(it, isNight)
+                    bake(it, isNight)
+                }
+            }
             _image.value = bmp?.asImageBitmap()
             if (bmp == null) select(null)
         }
+    }
+
+    /**
+     * Pinta el velo dentro de la imagen, una sola vez, según qué tan claro es el fondo (para que el
+     * texto se lea): la pantalla dibuja una capa completa menos en CADA cuadro. Se marca opaca para que
+     * la GPU la pinte sin mezclar, y solo existe esta copia en memoria (antes eran dos de 2.4 MB).
+     */
+    private fun accentOf(src: Bitmap, night: Boolean): Int? {
+        val small = Bitmap.createScaledBitmap(src, 48, 27, true)
+        val pixels = IntArray(small.width * small.height)
+        small.getPixels(pixels, 0, small.width, 0, 0, small.width, small.height)
+        if (small !== src) small.recycle()
+        return AccentPicker.pick(pixels, night)
+    }
+
+    private fun bake(src: Bitmap, night: Boolean): Bitmap {
+        val brightness = luminance(src)
+        val veil = if (night) android.graphics.Color.argb(((0.30f + 0.45f * brightness) * 255).toInt(), 0, 0, 0)
+        else android.graphics.Color.argb(((0.15f + 0.45f * (1f - brightness)) * 255).toInt(), 255, 255, 255)
+        val out = if (src.isMutable) src else src.copy(Bitmap.Config.ARGB_8888, true).also { src.recycle() }
+        android.graphics.Canvas(out).drawColor(veil)
+        out.setHasAlpha(false)
+        return out
     }
 
     /** Miniatura para Ajustes (~200 px). Se guarda en memoria para no volver a leer el archivo. */

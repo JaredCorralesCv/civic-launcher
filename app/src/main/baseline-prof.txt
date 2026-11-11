@@ -14,3 +14,7 @@ Lcom/civiclauncher/**;
 # Mapsforge: dibujar mosaicos y leer el mapa es lo más pesado de Inicio.
 HSPLorg/mapsforge/**;->**(**)**
 Lorg/mapsforge/**;
+
+# BRouter: calcular una ruta interpretado tarda varias veces más.
+HSPLbtools/**;->**(**)**
+Lbtools/**;

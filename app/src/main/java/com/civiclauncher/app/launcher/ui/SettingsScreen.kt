@@ -79,7 +79,7 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
     // que recorrer una lista larguísima manejando.
     Row(Modifier.fillMaxSize().padding(horizontal = PAGE_GUTTER, vertical = Civic.space.m), horizontalArrangement = Arrangement.spacedBy(Civic.space.l)) {
         Column(Modifier.width(232.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Civic.space.xs)) {
-            Text("Ajustes", style = Civic.type.headline.copy(fontSize = 28.sp), color = Civic.colors.text, modifier = Modifier.padding(start = 8.dp, bottom = Civic.space.m))
+            Text("Ajustes", style = Civic.type.pageTitle, color = Civic.colors.text, modifier = Modifier.padding(start = 8.dp, bottom = Civic.space.m))
             SettingsSection.entries.forEach { s ->
                 SectionTab(s, selected = s == section) { section = s }
             }
@@ -88,13 +88,19 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
             Modifier.weight(1f).fillMaxHeight(),
             verticalArrangement = Arrangement.spacedBy(Civic.space.s),
         ) {
-            item { Text(section.title, style = Civic.type.title.copy(fontSize = 22.sp), color = Civic.colors.text, modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = Civic.space.s)) }
+            item { Text(section.title, style = Civic.type.title, color = Civic.colors.text, modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = Civic.space.s)) }
             when (section) {
                 SettingsSection.APPEARANCE -> {
                     item {
                         CivicCard(Modifier.fillMaxWidth()) {
                             Text("Tema", style = Civic.type.label, color = Civic.colors.text)
-                            Text("Automático: noche de 19:00 a 7:00, día el resto del tiempo.", style = Civic.type.bodySmall, color = Civic.colors.textDim)
+                            val sportOn = c.launcherPrefs.homeStyle.collectAsStateWithLifecycle().value == com.civiclauncher.app.launcher.data.HomeStyle.SPORT
+                            Text(
+                                if (sportOn) "Con el estilo Sport, Civic siempre usa los colores de noche (es un tablero)."
+                                else "Automático: noche de 19:00 a 7:00, día el resto del tiempo.",
+                                style = Civic.type.bodySmall,
+                                color = Civic.colors.textDim,
+                            )
                             Spacer(Modifier.size(Civic.space.m))
                             Row(horizontalArrangement = Arrangement.spacedBy(Civic.space.m)) {
                                 ThemeMode.entries.forEach { mode ->
@@ -132,6 +138,22 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
                     }
                     item { WallpaperPicker() }
                     item {
+                        val useAccent by c.launcherPrefs.accentFromWallpaper.collectAsStateWithLifecycle()
+                        SettingRow(
+                            P.Sun,
+                            if (useAccent) "Color según el fondo: sí" else "Color según el fondo: no",
+                            "Botones y medidores toman el color principal de tu fondo de pantalla. Toca para cambiar.",
+                            showChevron = false,
+                        ) { c.launcherPrefs.setAccentFromWallpaper(!useAccent) }
+                    }
+                    item {
+                        val mode by c.launcherPrefs.animationMode.collectAsStateWithLifecycle()
+                        SettingRow(P.Gauge, "Animaciones: ${mode.label}", mode.description, showChevron = false) {
+                            val all = com.civiclauncher.app.launcher.AnimationMode.entries
+                            c.launcherPrefs.setAnimationMode(all[(mode.ordinal + 1) % all.size])
+                        }
+                    }
+                    item {
                         val autoHide by c.launcherPrefs.autoHideBar.collectAsStateWithLifecycle()
                         SettingRow(
                             P.SquaresFourLight,
@@ -163,6 +185,18 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
                         ) {
                             autoplay = !autoplay
                             c.launcherPrefs.autoplayBluetooth = autoplay
+                        }
+                    }
+                    item {
+                        var interrupts by remember { mutableStateOf(c.launcherPrefs.phoneInterruptsRadio) }
+                        SettingRow(
+                            P.RadioLight,
+                            if (interrupts) "El celular interrumpe la radio: sí" else "El celular interrumpe la radio: no",
+                            "Si suena algo en tu celular (música o un audio de WhatsApp) con la radio puesta, se oye el celular. Toca para cambiar.",
+                            showChevron = false,
+                        ) {
+                            interrupts = !interrupts
+                            c.launcherPrefs.phoneInterruptsRadio = interrupts
                         }
                     }
                     item {
@@ -207,7 +241,7 @@ fun SettingsScreen(onOpenDiagnostics: () -> Unit, onOpenCleanup: () -> Unit) {
                             P.Cpu,
                             when (opt) {
                                 is com.civiclauncher.app.launcher.AppOptimizer.Status.Done -> "Optimizado para esta pantalla"
-                                com.civiclauncher.app.launcher.AppOptimizer.Status.Running -> "Optimizando… (hasta 2 min)"
+                                com.civiclauncher.app.launcher.AppOptimizer.Status.Running -> "Optimizando… (hasta 10 min)"
                                 is com.civiclauncher.app.launcher.AppOptimizer.Status.Failed -> "Se optimiza solo en unas horas"
                                 com.civiclauncher.app.launcher.AppOptimizer.Status.Idle -> "Optimizar para esta pantalla"
                             },
@@ -534,7 +568,7 @@ private fun CarPhotoRow() {
         SettingRow(
             P.Car,
             if (photo == null) "Foto de tu carro" else "Cambiar foto de tu carro",
-            "Aparece en \"Mi vehículo\" en Inicio. Funciona mejor una foto de lado con fondo oscuro.",
+            "Aparece en el widget \"Foto de mi carro\" del Inicio Sport (Editar → Vehículo). Funciona mejor una foto de lado.",
         ) {
             runCatching { picker.launch("image/*") }
                 .onFailure { Toast.makeText(ctx, "No hay app para elegir imágenes", Toast.LENGTH_SHORT).show() }

@@ -99,13 +99,14 @@ class TripComputer(initial: TripStats = TripStats()) {
         private set
     private var lastMs: Long? = null
 
-    fun update(data: VehicleData, nowMs: Long): TripStats {
+    /** [nowMs]: el reloj de las lecturas (no salta). [wallMs]: la hora de verdad, solo para mostrar cuándo empezó. */
+    fun update(data: VehicleData, nowMs: Long, wallMs: Long = nowMs): TripStats {
         val rpm = data[Pids.RPM].freshAt(nowMs)?.value
         val running = rpm != null && rpm > 300
         val prev = lastMs
         lastMs = nowMs
         if (!running) return stats
-        if (stats.startedAtMs == 0L) stats = stats.copy(startedAtMs = nowMs)
+        if (stats.startedAtMs == 0L) stats = stats.copy(startedAtMs = wallMs)
         if (prev == null) return stats
         val dt = nowMs - prev
         if (dt <= 0 || dt > 5_000) return stats
@@ -125,6 +126,21 @@ class TripComputer(initial: TripStats = TripStats()) {
         stats = TripStats()
         lastMs = null
     }
+}
+
+/**
+ * Un momento medido de dos formas. Estas pantallas corrigen la hora al agarrar GPS, así que el reloj
+ * de pared puede saltar a media vuelta; el contador desde el encendido no salta, pero vuelve a cero
+ * con cada reinicio.
+ */
+data class TimeMark(val bootId: String, val elapsedMs: Long, val wallMs: Long) {
+    /**
+     * Tiempo transcurrido hasta [now]. En el mismo encendido, por el contador. Entre reinicios no queda
+     * más que el reloj de pared; si sale negativo (hora aún sin corregir), se toma como 0.
+     */
+    fun msUntil(now: TimeMark): Long =
+        if (bootId.isNotEmpty() && bootId == now.bootId) now.elapsedMs - elapsedMs
+        else (now.wallMs - wallMs).coerceAtLeast(0)
 }
 
 /** Avisos que conviene mostrar mientras manejas. */

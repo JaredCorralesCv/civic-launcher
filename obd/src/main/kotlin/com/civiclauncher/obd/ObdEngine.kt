@@ -26,6 +26,16 @@ sealed interface EngineState {
     data class Reconnecting(val reason: String, val retryInMs: Long, val attempt: Int) : EngineState
 }
 
+/** Qué tanto necesita la app del OBD en este momento. */
+enum class PollDemand {
+    /** Nadie ve datos en vivo (otra app al frente, Música, Ajustes…): solo viaje y avisos. */
+    BACKGROUND,
+    /** Una pantalla con medidores: a toda velocidad, sin los datos exclusivos de Sensores. */
+    LIVE,
+    /** La pestaña Sensores: todo lo que el carro reporta. */
+    ALL,
+}
+
 data class Reading(val value: Double, val atMs: Long)
 
 data class VehicleData(
@@ -56,6 +66,8 @@ class ObdEngine(
 ) {
     data class Config(
         val minCycleMs: Long = 80,
+        /** Sin nadie viendo datos en vivo: 2 vueltas por segundo (viaje y avisos no necesitan más). */
+        val backgroundCycleMs: Long = 500,
         val carOffRetryMs: Long = 5_000,
         val maxBackoffMs: Long = 30_000,
         /** Vueltas seguidas sin respuesta del carro antes de decidir que se apagó. */
@@ -76,6 +88,9 @@ class ObdEngine(
     @Volatile private var session: ElmSession? = null
     @Volatile private var isCan = true
     @Volatile private var refreshDtcsRequested = false
+
+    /** Cuánto se necesita ahora; el ciclo lo lee al empezar cada vuelta. */
+    @Volatile var demand: PollDemand = PollDemand.LIVE
 
     private var job: Job? = null
 
@@ -156,9 +171,14 @@ class ObdEngine(
         val noDataCount = mutableMapOf<Int, Int>()
         var silentCycles = 0
         var cycle = 0L
+        var lastDemand = demand
 
         while (coroutineContext.isActive) {
             val started = clock()
+            val want = demand
+            // Al abrir Sensores se piden todos los grupos en la siguiente vuelta, sin esperar su turno.
+            if (want == PollDemand.ALL && lastDemand != PollDemand.ALL) cycle = 0
+            lastDemand = want
             val groups = buildList {
                 add(fast)
                 if (cycle % 3 == 0L) add(medium)
@@ -177,8 +197,10 @@ class ObdEngine(
                     noDataCount.remove(spec.pid)
                     fresh[spec.pid] = Reading(value, clock())
                 }
+                // Lo que solo se ve en Sensores no alarga cada vuelta ni retrasa RPM y velocidad.
+                val ask = if (want == PollDemand.ALL || group === fast) group else group.filter { it.pid in ALWAYS }
                 // Con CAN: de 6 en 6 en una sola pregunta (mucho menos ida y vuelta por Bluetooth).
-                val batches = if (session.multiPid) group.chunked(ElmSession.MAX_MULTI) else group.map { listOf(it) }
+                val batches = if (session.multiPid) ask.chunked(ElmSession.MAX_MULTI) else ask.map { listOf(it) }
                 for (batch in batches) {
                     asked += batch.size
                     val many = if (batch.size > 1) session.queryMany(batch) else null
@@ -203,7 +225,7 @@ class ObdEngine(
             }
             val battery = if (cycle % 10 == 0L) batteryReading(session) else null
             if (fresh.isNotEmpty() || battery != null) {
-                _data.update { it.copy(values = if (fresh.isEmpty()) it.values else it.values + fresh, battery = battery ?: it.battery) }
+                _data.update { it.copy(values = if (fresh.isEmpty()) it.values else merged(it.values, fresh), battery = battery ?: it.battery) }
             }
 
             // Códigos de falla: cada 2 minutos, o enseguida si cambió el foco / la cantidad (PID 01).
@@ -219,8 +241,17 @@ class ObdEngine(
 
             cycle++
             val elapsed = clock() - started
-            if (elapsed < config.minCycleMs) delay(config.minCycleMs - elapsed)
+            val minCycle = if (want == PollDemand.BACKGROUND) config.backgroundCycleMs else config.minCycleMs
+            if (elapsed < minCycle) delay(minCycle - elapsed)
         }
+    }
+
+    /** Sin el orden de inserción del `+` de Kotlin: menos memoria en algo que se copia en cada vuelta. */
+    private fun merged(old: Map<Int, Reading>, fresh: Map<Int, Reading>): Map<Int, Reading> {
+        val out = HashMap<Int, Reading>(((old.size + fresh.size) / 0.75f).toInt() + 1)
+        out.putAll(old)
+        out.putAll(fresh)
+        return out
     }
 
     private var lastMonitor: Int? = null
@@ -294,6 +325,15 @@ class ObdEngine(
         )
         /** Cada 60 vueltas: contadores que cambian muy poco. */
         val RARE = listOf(Pids.RUN_TIME, Pids.DIST_WITH_MIL, Pids.DIST_SINCE_CLEAR, Pids.TIME_WITH_MIL, Pids.TIME_SINCE_CLEAR, Pids.ODOMETER)
+        /**
+         * Fuera de [FAST], lo que usan los cálculos (consumo, avisos, códigos) y lo que se ve fuera de
+         * Sensores. El resto (sondas, ajustes de combustible, purga, catalizador…) se pide solo con
+         * Sensores abierto.
+         */
+        val ALWAYS = setOf(
+            Pids.FUEL_RATE, Pids.COOLANT_TEMP, Pids.INTAKE_AIR_TEMP, Pids.AMBIENT_TEMP, Pids.OIL_TEMP,
+            Pids.FUEL_SYSTEM, Pids.MONITOR_STATUS, Pids.DIST_SINCE_CLEAR,
+        ).map { it.pid }.toSet()
         private const val DTC_REFRESH_MS = 120_000L
     }
 }

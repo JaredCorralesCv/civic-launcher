@@ -2,15 +2,17 @@ package com.civiclauncher.app.launcher.data
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.location.GnssStatus
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
-import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
@@ -21,8 +23,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -32,8 +36,6 @@ data class GpsSpeed(
     val enabled: Boolean = true,
     /** null = sin ubicación reciente (bajo techo, arrancando o sin satélites). */
     val kmh: Float? = null,
-    val satsUsed: Int = 0,
-    val satsVisible: Int = 0,
     val accuracyM: Float? = null,
     /** Hacia dónde avanza el carro, en grados (0 = norte). Solo existe en movimiento. */
     val bearing: Float? = null,
@@ -54,10 +56,28 @@ data class GpsSpeed(
 @OptIn(ExperimentalCoroutinesApi::class)
 class GpsSpeedRepository(private val context: Context, scope: CoroutineScope) {
     private val permissionTrigger = MutableStateFlow(0)
+    private val screenOn = MutableStateFlow((context.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isInteractive != false)
 
-    val speed: StateFlow<GpsSpeed> = permissionTrigger
-        .flatMapLatest { updates() }
+    /**
+     * Con la pantalla apagada (llave quitada) no se pide posición aunque haya una navegación activa,
+     * que observa esto desde fuera de la pantalla. La ruta espera y sigue al volver.
+     */
+    val speed: StateFlow<GpsSpeed> = combine(permissionTrigger, screenOn) { _, on -> on }
+        .flatMapLatest { on -> if (on) updates() else flowOf(GpsSpeed(permission = hasPermission())) }
         .stateIn(scope, SharingStarted.WhileSubscribed(5_000), GpsSpeed(permission = hasPermission()))
+
+    init {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                screenOn.value = intent.action == Intent.ACTION_SCREEN_ON
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+        }
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+    }
 
     fun hasPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
@@ -117,19 +137,8 @@ class GpsSpeedRepository(private val context: Context, scope: CoroutineScope) {
             override fun onProviderEnabled(provider: String) = emit(state.copy(enabled = true))
             override fun onProviderDisabled(provider: String) = emit(state.copy(enabled = false, kmh = null))
         }
-        val gnss = object : GnssStatus.Callback() {
-            override fun onSatelliteStatusChanged(status: GnssStatus) {
-                var used = 0
-                for (i in 0 until status.satelliteCount) if (status.usedInFix(i)) used++
-                if (used != state.satsUsed || status.satelliteCount != state.satsVisible) {
-                    emit(state.copy(satsUsed = used, satsVisible = status.satelliteCount))
-                }
-            }
-        }
-        val handler = Handler(Looper.getMainLooper())
         runCatching {
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, listener, Looper.getMainLooper())
-            lm.registerGnssStatusCallback(gnss, handler)
         }
         // Si dejan de llegar ubicaciones (túnel, estacionamiento), no mostrar una velocidad vieja.
         launch {
@@ -142,7 +151,6 @@ class GpsSpeedRepository(private val context: Context, scope: CoroutineScope) {
         }
         awaitClose {
             runCatching { lm.removeUpdates(listener) }
-            runCatching { lm.unregisterGnssStatusCallback(gnss) }
         }
     }.conflate()
 }

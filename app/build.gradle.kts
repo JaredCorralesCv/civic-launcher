@@ -17,8 +17,8 @@ android {
         // Tu pantalla tiene Android 8.1 (API 27). Dejamos 24 por margen; las librerías piden 23 o más.
         minSdk = 24
         targetSdk = 36
-        versionCode = 24
-        versionName = "0.8.1"
+        versionCode = 25
+        versionName = "0.9.0"
     }
 
     // Firma propia: el actualizador solo puede instalar versiones firmadas con la MISMA llave.
@@ -75,6 +75,8 @@ dependencies {
     implementation(files("libs/brouter-1.7.10-ro.jar"))
     implementation(libs.mapsforge.themes)
     implementation(libs.androidsvg)
+    // Cliente de adb (Apache 2.0): para que Civic se compile solo donde no hay root.
+    implementation(libs.dadb)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

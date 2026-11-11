@@ -32,9 +32,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
@@ -46,6 +51,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.civiclauncher.app.container
 import com.civiclauncher.app.launcher.media.MediaState
+import com.civiclauncher.app.launcher.media.MusicSource
 import com.civiclauncher.app.launcher.nav.blockTouches
 import com.civiclauncher.app.ui.design.Civic
 import com.civiclauncher.app.ui.design.PhosphorIcons as P
@@ -79,6 +85,7 @@ enum class WidgetCategory(val label: String) {
     TRIP("Viaje"),
     MAP("Mapa"),
     MEDIA("Multimedia"),
+    APPS("Apps"),
     FULLSCREEN("Pantallas completas"),
 }
 
@@ -132,10 +139,12 @@ enum class SportWidget(val id: String, val label: String, val description: Strin
     // Vehículo, viaje, mapa y música
     ROAD("road", "En carretera", "Tu carro por detrás, avanzando a tu velocidad", P.Car, WidgetCategory.VEHICLE, setOf(SlotSize.SMALL, SlotSize.LARGE, SlotSize.TALL, SlotSize.WIDE, SlotSize.FULL)),
     CAR("car", "Mi carro", "El carro desde arriba y sus datos", P.Car, WidgetCategory.VEHICLE, setOf(SlotSize.LARGE, SlotSize.TALL, SlotSize.WIDE)),
+    PHOTO("photo", "Foto de mi carro", "Tu foto con la velocidad", P.Car, WidgetCategory.VEHICLE, setOf(SlotSize.SMALL, SlotSize.LARGE, SlotSize.TALL, SlotSize.WIDE)),
     STATS("stats", "Datos del carro", "Batería, motor y consumo", P.CarBattery, WidgetCategory.VEHICLE, SMALL),
     TRIP("trip", "Viaje", "Distancia, tiempo y promedios", P.Timer, WidgetCategory.TRIP, SMALL),
     MAP("map", "Mapa", "Tu ubicación y la navegación", P.MapTrifold, WidgetCategory.MAP, setOf(SlotSize.LARGE, SlotSize.TALL, SlotSize.WIDE, SlotSize.FULL)),
     MUSIC("music", "Música", "Lo que suena, con controles", P.MusicNotes, WidgetCategory.MEDIA, SlotSize.entries.toSet()),
+    ACCESS("access", "Accesos", "Tus apps favoritas a un toque", P.SquaresFour, WidgetCategory.APPS, setOf(SlotSize.SMALL, SlotSize.STRIP)),
     // Pantallas completas
     FULL_CLUSTER("full_cluster", "Tablero", "Tacómetro y velocímetro grandes, y 4 relojes del motor", P.Gauge, WidgetCategory.FULLSCREEN, setOf(SlotSize.FULL)),
     FULL_GAUGES("full_gauges", "Medidores del motor", "Ocho medidores: RPM, velocidad, acelerador, temperaturas…", P.Speedometer, WidgetCategory.FULLSCREEN, setOf(SlotSize.FULL)),
@@ -187,13 +196,23 @@ object SportLayout {
     /** Qué widget va en cada lugar del diseño (lo guardado, o el de fábrica si falta o no cabe). */
     fun resolve(saved: Map<String, String>, arrangement: HomeArrangement): Map<Slot, SportWidget> {
         val slots = slotsOf(arrangement)
-        val out = HashMap<Slot, SportWidget>()
+        val out = LinkedHashMap<Slot, SportWidget>()
         for (slot in slots) {
             val w = SportWidget.entries.firstOrNull { it.id == saved[slot.id] }
             out[slot] = if (w != null && slot.size in w.sizes && w !in out.values) w else DEFAULTS.getValue(slot)
         }
-        // Si quedó un widget repetido (por un dato viejo), se vuelve a lo de fábrica de este diseño.
-        return if (out.values.toSet().size == out.size) out else slots.associateWith { DEFAULTS.getValue(it) }
+        // Un widget repetido (por un dato viejo) se cambia SOLO en ese lugar: por el de fábrica si está
+        // libre, o por el primero que quepa y no esté puesto. Antes se perdía todo el acomodo.
+        val used = HashSet<SportWidget>()
+        for (slot in slots) {
+            val w = out.getValue(slot)
+            if (used.add(w)) continue
+            val replacement = DEFAULTS.getValue(slot).takeIf { it !in out.values }
+                ?: SportWidget.entries.first { slot.size in it.sizes && it !in out.values }
+            out[slot] = replacement
+            used.add(replacement)
+        }
+        return out
     }
 
     /**
@@ -227,15 +246,22 @@ object SportLayout {
  * cambiarlo, con el nombre de lo que tiene ahora. Nada de abajo responde mientras tanto.
  */
 @Composable
-internal fun EditOverlay(widget: SportWidget, onChange: () -> Unit) {
+internal fun EditOverlay(widget: SportWidget, hint: DropHint, drag: Modifier, onChange: () -> Unit) {
     val shape = RoundedCornerShape(Civic.radii.xl)
+    val border = when (hint) {
+        DropHint.HOVER -> Civic.colors.ok
+        DropHint.CAN_DROP -> Civic.colors.ok.copy(alpha = 0.6f)
+        DropHint.BLOCKED -> Color.White.copy(alpha = 0.12f)
+        else -> Civic.colors.accent.copy(alpha = 0.85f)
+    }
     Box(
         Modifier
             .fillMaxSize()
             .blockTouches()
+            .then(drag)
             .clip(shape)
-            .background(Color.Black.copy(alpha = 0.55f))
-            .border(2.dp, Civic.colors.accent.copy(alpha = 0.85f), shape)
+            .background(Color.Black.copy(alpha = if (hint == DropHint.BLOCKED) 0.75f else 0.55f))
+            .border(if (hint == DropHint.HOVER) 4.dp else 2.dp, border, shape)
             .clickable(role = Role.Button, onClickLabel = "Cambiar ${widget.label}", onClick = onChange),
         contentAlignment = Alignment.Center,
     ) {
@@ -251,8 +277,67 @@ internal fun EditOverlay(widget: SportWidget, onChange: () -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(widget.label, style = Civic.type.label.copy(fontSize = 15.sp), color = Color.White)
-                Text("Toca para cambiarlo", style = Civic.type.caption, color = Color.White.copy(alpha = 0.7f))
+                Text("Toca para cambiarlo o arrástralo", style = Civic.type.caption, color = Color.White.copy(alpha = 0.7f))
             }
+        }
+    }
+}
+
+/** Cómo se ve un lugar mientras arrastras un widget. */
+internal enum class DropHint { NONE, SOURCE, CAN_DROP, HOVER, BLOCKED }
+
+/**
+ * Mantener presionado un widget entra a editar. Escucha antes que el widget (sin quitarle el toque
+ * normal); al cumplirse el tiempo se queda con el dedo, para que al soltar no abra lo que había debajo.
+ */
+internal fun Modifier.longPressToEdit(onLongPress: () -> Unit): Modifier = pointerInput(onLongPress) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        val completed = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+            while (true) {
+                val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id }
+                if (change == null || !change.pressed || (change.position - down.position).getDistance() > viewConfiguration.touchSlop) return@withTimeoutOrNull false
+            }
+            @Suppress("UNREACHABLE_CODE") false
+        }
+        if (completed == null) {
+            onLongPress()
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                event.changes.forEach { it.consume() }
+                if (event.changes.none { it.pressed }) break
+            }
+        }
+    }
+}
+
+/**
+ * Arrastrar un widget. Escucha antes que la capa de edición (que se queda con todos los toques): pasado
+ * el umbral toma el dedo, y un toque corto sigue siendo "cambiar".
+ */
+internal fun Modifier.dragToSwap(key: Any, onStart: (Offset) -> Unit, onMove: (Offset) -> Unit, onCancel: () -> Unit, onEnd: () -> Unit): Modifier = pointerInput(key) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        var dragging = false
+        var finished = false
+        try {
+            while (true) {
+                val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
+                if (!change.pressed) {
+                    if (dragging) change.consume()
+                    finished = true
+                    break
+                }
+                if (!dragging && (change.position - down.position).getDistance() > viewConfiguration.touchSlop) {
+                    dragging = true
+                    onStart(change.position)
+                } else if (dragging) {
+                    onMove(change.position - change.previousPosition)
+                }
+                if (dragging) change.consume()
+            }
+        } finally {
+            if (dragging) { if (finished) onEnd() else onCancel() }
         }
     }
 }
@@ -313,34 +398,85 @@ private fun WidgetSurface(modifier: Modifier, onClick: (() -> Unit)? = null, con
     ) { content() }
 }
 
+/** Hasta 6 apps favoritas (o las últimas que abriste, mientras no elijas). */
+@Composable
+internal fun AccessWidget(modifier: Modifier, strip: Boolean, live: Boolean, onOpenApps: () -> Unit) {
+    if (!live) {
+        // Miniatura del menú: sin cargar íconos.
+        WidgetSurface(modifier) {
+            Row(Modifier.fillMaxSize().padding(14.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                repeat(3) { Box(Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(Civic.colors.surfaceRaised)) }
+            }
+        }
+        return
+    }
+    val repo = LocalContext.current.container.apps
+    val favorites by repo.favorites.collectAsStateWithLifecycle()
+    val recent by repo.recent.collectAsStateWithLifecycle()
+    val list = favorites.ifEmpty { recent }.take(if (strip) 4 else 6)
+    WidgetSurface(modifier, if (list.isEmpty()) onOpenApps else null) {
+        if (list.isEmpty()) {
+            Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Accesos", style = Civic.type.label, color = Civic.colors.text)
+                Text("En Apps, mantén presionada una app para añadirla", style = Civic.type.caption, color = Civic.colors.textDim, maxLines = 3)
+            }
+            return@WidgetSurface
+        }
+        val rows = if (strip) listOf(list) else list.chunked(3)
+        Column(Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.SpaceEvenly) {
+            rows.forEach { row ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    row.forEach { app -> AccessCell(app, if (strip) 56 else 64) }
+                    // Una fila incompleta no se estira: se conservan las columnas.
+                    repeat((if (strip) 4 else 3) - row.size) { Spacer(Modifier.size(if (strip) 56.dp else 64.dp)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccessCell(app: com.civiclauncher.app.launcher.data.LaunchableApp, sizeDp: Int) {
+    val repo = LocalContext.current.container.apps
+    val icon by androidx.compose.runtime.produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, app) { value = repo.icon(app) }
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    Box(
+        Modifier
+            .size(sizeDp.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(if (pressed) Civic.colors.surfacePressed else Color.Transparent)
+            .clickable(source, indication = null, role = Role.Button, onClickLabel = "Abrir ${app.label}") { repo.launch(app) },
+        contentAlignment = Alignment.Center,
+    ) {
+        icon?.let { Image(it, app.label, modifier = Modifier.size((sizeDp - 8).dp)) }
+    }
+}
+
 /** Datos del carro: batería, motor y consumo, uno debajo de otro, con su color. */
 @Composable
-internal fun StatsWidget(modifier: Modifier, onClick: () -> Unit) {
-    val c = LocalContext.current.container
-    val obdState by c.obd.state.collectAsStateWithLifecycle()
-    val dataState = c.obd.data.collectAsStateWithLifecycle()
-    val live by c.obd.live.collectAsStateWithLifecycle()
-    val connected = obdState is EngineState.Connected
-    val coolant by remember(connected) { derivedStateOf { if (connected) dataState.value[Pids.COOLANT_TEMP].fresh()?.value?.let { Math.round(it).toDouble() } else null } }
-    val battery by remember { derivedStateOf { dataState.value.battery.fresh(30_000)?.value?.let { Math.round(it * 10) / 10.0 } } }
+internal fun StatsWidget(modifier: Modifier, live: Boolean, onClick: () -> Unit) {
+    val now by rememberCarNow(live)
+    val battery = now.battery
+    val coolant = now.coolant
     WidgetSurface(modifier, onClick) {
         Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.SpaceEvenly) {
             StatLine(P.CarBattery, "Batería", battery?.let { "%.1f V".format(it) } ?: "--", when {
                 battery == null -> Civic.colors.textFaint
-                battery!! < 11.9 -> Civic.colors.bad
+                battery < 11.9 -> Civic.colors.bad
                 else -> Civic.colors.ok
             })
             StatLine(P.Thermometer, "Motor", coolant?.let { "%.0f °C".format(it) } ?: "--", when {
                 coolant == null -> Civic.colors.textFaint
-                coolant!! >= 105 -> Civic.colors.bad
-                coolant!! >= 100 -> Civic.colors.warn
-                coolant!! < 70 -> Civic.colors.cool
+                coolant >= 105 -> Civic.colors.bad
+                coolant >= 100 -> Civic.colors.warn
+                coolant < 70 -> Civic.colors.cool
                 else -> Civic.colors.ok
             })
             StatLine(
                 P.GasPump, "Consumo",
-                live.kmPerLiter?.let { if (it >= 99) "∞ km/L" else "%.1f km/L".format(it) } ?: live.litersPerHour?.let { "%.1f L/h".format(it) } ?: "--",
-                if (live.kmPerLiter != null || live.litersPerHour != null) Civic.colors.text else Civic.colors.textFaint,
+                now.kmPerLiter?.let { if (it >= 99) "∞ km/L" else "%.1f km/L".format(it) } ?: now.litersPerHour?.let { "%.1f L/h".format(it) } ?: "--",
+                if (now.kmPerLiter != null || now.litersPerHour != null) Civic.colors.text else Civic.colors.textFaint,
             )
         }
     }
@@ -365,9 +501,9 @@ internal fun MusicWidget(modifier: Modifier, size: SlotSize, onOpen: () -> Unit)
     val strip = size == SlotSize.STRIP
     val big = size != SlotSize.SMALL && !strip
     val c = LocalContext.current.container
-    val state by c.media.state.collectAsStateWithLifecycle()
-    val now = (state as? MediaState.Active)?.now
-    val tint = now?.artColor
+    // Cualquier fuente: canción, radio o Android Auto.
+    val line = rememberNowLine()
+    val tint = line.color
     val shape = RoundedCornerShape(Civic.radii.xl)
     Box(
         modifier
@@ -382,24 +518,24 @@ internal fun MusicWidget(modifier: Modifier, size: SlotSize, onOpen: () -> Unit)
         @Composable
         fun Cover(m: Modifier) {
             Box(m.clip(RoundedCornerShape(Civic.radii.m)).background(Civic.colors.surfaceRaised), contentAlignment = Alignment.Center) {
-                val art = now?.art
+                val art = line.art
                 if (art != null) Image(art, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                else Icon(P.MusicNotes, null, tint = Civic.colors.textFaint, modifier = Modifier.fillMaxSize(0.4f))
+                else Icon(if (line.source == MusicSource.RADIO) P.RadioFill else P.MusicNotes, null, tint = Civic.colors.textFaint, modifier = Modifier.fillMaxSize(0.4f))
             }
         }
         @Composable
         fun Controls(compact: Boolean = false) {
             val b = if (compact) 42.dp else 54.dp
             Row(verticalAlignment = Alignment.CenterVertically) {
-                WidgetButton(P.SkipBackFill, "Anterior", now != null, b) { c.media.previous() }
-                WidgetButton(if (now?.playing == true) P.PauseFill else P.PlayFill, if (now?.playing == true) "Pausar" else "Reproducir", true, b) {
-                    if (now != null) c.media.playPause() else if (!c.media.playBluetooth()) onOpen()
+                WidgetButton(P.SkipBackFill, "Anterior", line.canSkip, b) { skipAny(c, next = false) }
+                WidgetButton(if (line.playing == true) P.PauseFill else P.PlayFill, if (line.playing == true) "Pausar" else "Reproducir", true, b) {
+                    playPauseAny(c, onOpen)
                 }
-                WidgetButton(P.SkipForwardFill, "Siguiente", now != null, b) { c.media.next() }
+                WidgetButton(P.SkipForwardFill, "Siguiente", line.canSkip, b) { skipAny(c, next = true) }
             }
         }
-        val title = now?.title ?: "Sin música"
-        val subtitle = now?.let { it.artist ?: sourceLabel(it.source) } ?: "Toca para elegir"
+        val title = line.title
+        val subtitle = line.subtitle
         if (strip) {
             // En franja: la portada a un lado; la canción arriba y los controles grandes en medio.
             Row(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -407,7 +543,7 @@ internal fun MusicWidget(modifier: Modifier, size: SlotSize, onOpen: () -> Unit)
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        if (now != null && now.artist != null) "$title · ${now.artist}" else title,
+                        if (line.source != null) "$title · $subtitle" else title,
                         style = Civic.type.label.copy(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
                         color = Civic.colors.text,
                         maxLines = 1,
@@ -455,4 +591,82 @@ private fun WidgetButton(icon: ImageVector, label: String, enabled: Boolean, siz
             .clickable(source, indication = null, enabled = enabled, role = Role.Button, onClickLabel = label, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, label, tint = if (enabled) Civic.colors.text else Civic.colors.textFaint, modifier = Modifier.size(size * 0.5f)) }
+}
+
+/**
+ * Foto de mi carro: la foto que elegiste en Ajustes, a todo el lugar, con la velocidad encima.
+ * Sin foto, dice dónde elegirla.
+ */
+@Composable
+internal fun CarPhotoWidget(speed: Float?, live: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val photo by LocalContext.current.container.carPhoto.photo.collectAsStateWithLifecycle()
+    val shape = RoundedCornerShape(Civic.radii.xl)
+    Box(
+        modifier
+            .clip(shape)
+            .background(Civic.colors.surface)
+            .bevelBorder(shape)
+            .let { if (live) it.clickable(role = Role.Button, onClick = onClick) else it },
+    ) {
+        val img = photo
+        if (img == null) {
+            Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(P.Car, null, tint = Civic.colors.textFaint, modifier = Modifier.size(44.dp))
+                Spacer(Modifier.height(10.dp))
+                Text("Foto de mi carro", style = Civic.type.label, color = Civic.colors.text)
+                Text("Elígela en Ajustes → Apariencia", style = Civic.type.caption, color = Civic.colors.textDim)
+            }
+            return@Box
+        }
+        Image(img, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        // Velo abajo para leer la velocidad sobre cualquier foto.
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.5f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.75f))))
+        Row(Modifier.align(Alignment.BottomStart).padding(16.dp), verticalAlignment = Alignment.Bottom) {
+            Text(
+                speed?.let { "%.0f".format(it) } ?: "--",
+                style = Civic.type.gaugeValue.copy(fontSize = 40.sp),
+                color = Color.White,
+            )
+            Spacer(Modifier.width(6.dp))
+            Text("km/h", style = Civic.type.label, color = Color.White.copy(alpha = 0.75f), modifier = Modifier.padding(bottom = 6.dp))
+        }
+    }
+}
+
+/** Lo que muestran los widgets de datos del carro, ya redondeado a lo que se ve. */
+@androidx.compose.runtime.Immutable
+internal data class CarNow(
+    val battery: Double?,
+    val coolant: Double?,
+    val running: Boolean,
+    val kmPerLiter: Double?,
+    val litersPerHour: Double?,
+)
+
+private val SAMPLE_CAR = CarNow(battery = 14.1, coolant = 88.0, running = true, kmPerLiter = 9.4, litersPerHour = null)
+
+/**
+ * Batería, motor y consumo para los widgets. Solo cambia cuando cambia lo que se ve, se detiene si
+ * Inicio no se ve y, en las miniaturas del menú ([live] falso), son valores fijos que no leen nada.
+ */
+@Composable
+internal fun rememberCarNow(live: Boolean): androidx.compose.runtime.State<CarNow> {
+    if (!live) return remember { androidx.compose.runtime.mutableStateOf(SAMPLE_CAR) }
+    val c = LocalContext.current.container
+    val state = c.obd.state.collectWhenVisible()
+    val data = c.obd.data.collectWhenVisible()
+    val derived = c.obd.live.collectWhenVisible()
+    return remember {
+        derivedStateOf {
+            val connected = state.value is EngineState.Connected
+            val d = data.value
+            CarNow(
+                battery = d.battery.fresh(30_000)?.value?.let { Math.round(it * 10) / 10.0 },
+                coolant = if (connected) d[Pids.COOLANT_TEMP].fresh()?.value?.let { Math.round(it).toDouble() } else null,
+                running = (d[Pids.RPM].fresh()?.value ?: 0.0) > 500,
+                kmPerLiter = derived.value.kmPerLiter,
+                litersPerHour = derived.value.litersPerHour,
+            )
+        }
+    }
 }

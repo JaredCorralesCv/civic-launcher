@@ -19,6 +19,8 @@ class MainActivity : ComponentActivity() {
         hideSystemBars()
         keepSystemBarsHidden()
         setContent { LauncherRoot(homePresses) }
+        // Compose ya pinta toda la pantalla: el fondo de la ventana solo era otra capa completa por cuadro.
+        window.decorView.post { window.setBackgroundDrawable(null) }
     }
 
     /**
@@ -45,12 +47,34 @@ class MainActivity : ComponentActivity() {
         if (intent.hasCategory(Intent.CATEGORY_HOME) && !intent.getBooleanExtra(EXTRA_STAY, false)) homePresses.tryEmit(Unit)
     }
 
+    private val frameHandler by lazy { android.os.Handler(mainLooper) }
+    private val slowFrames by lazy { com.civiclauncher.app.launcher.SlowFrameDetector(android.os.SystemClock.elapsedRealtime()) }
+
+    // Solo informa de cuadros que ya se dibujaron: medir no provoca ninguno.
+    private val frameListener = android.view.Window.OnFrameMetricsAvailableListener { _, m, _ ->
+        val low = com.civiclauncher.app.launcher.LowPower
+        if (!low.watching || m.getMetric(android.view.FrameMetrics.FIRST_DRAW_FRAME) == 1L) return@OnFrameMetricsAvailableListener
+        val nanos = m.getMetric(android.view.FrameMetrics.ANIMATION_DURATION) + m.getMetric(android.view.FrameMetrics.LAYOUT_MEASURE_DURATION) +
+            m.getMetric(android.view.FrameMetrics.DRAW_DURATION) + m.getMetric(android.view.FrameMetrics.SYNC_DURATION) +
+            m.getMetric(android.view.FrameMetrics.COMMAND_ISSUE_DURATION) + m.getMetric(android.view.FrameMetrics.SWAP_BUFFERS_DURATION)
+        if (slowFrames.onFrame(nanos / 1_000_000f, android.os.SystemClock.elapsedRealtime())) low.onSlowDetected()
+    }
+
     override fun onResume() {
         super.onResume()
         // Al despertar de la suspensión, actualiza la hora sin esperar al siguiente minuto.
         container.clock.refresh()
-        // Si "Música BT" pausó al salir de ella, Civic reanuda la canción.
+        // Vuelve a revisar qué suena (y si "Música BT" pausó al salir de ella, reanuda la canción).
         container.media.onLauncherResumed()
+        container.obd.setForeground(true)
+        window.addOnFrameMetricsAvailableListener(frameListener, frameHandler)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        container.media.onLauncherPaused()
+        container.obd.setForeground(false)
+        runCatching { window.removeOnFrameMetricsAvailableListener(frameListener) }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

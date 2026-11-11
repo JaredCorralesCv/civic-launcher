@@ -142,7 +142,7 @@ class SearchIndex(private val map: MapRepository, private val scope: CoroutineSc
         val file = (map.status.value as? MapStatus.Ready)?.file ?: return
         _state.value = IndexState.Building(0f)
         val out = ArrayList<Entry>(20_000)
-        val seen = HashSet<String>()
+        val seen = LongHashSet()
         val mf = MapFile(file, "es")
         try {
             val z: Byte = 14
@@ -192,10 +192,14 @@ class SearchIndex(private val map: MapRepository, private val scope: CoroutineSc
         _state.value = IndexState.Ready(out.size)
     }
 
-    private fun add(out: MutableList<Entry>, seen: MutableSet<String>, name: String, kind: String, lat: Double, lon: Double, cellM: Double) {
+    private fun add(out: MutableList<Entry>, seen: LongHashSet, name: String, kind: String, lat: Double, lon: Double, cellM: Double) {
         val norm = normalize(name)
         val cellDeg = cellM / 111_000.0
-        val key = "$norm|$kind|${(lat / cellDeg).toLong()}|${(lon / cellDeg).toLong()}"
+        // Una huella de 64 bits en lugar del texto: ~96 mil textos largos eran ~15 MB de pico al armar.
+        var key = FNV_START
+        for (ch in norm) key = fnv(key, ch.code.toLong())
+        for (ch in kind) key = fnv(key, ch.code.toLong())
+        key = fnv(fnv(key, (lat / cellDeg).toLong()), (lon / cellDeg).toLong())
         if (seen.add(key)) out += Entry(name, norm, kind, lat.toFloat(), lon.toFloat())
     }
 
@@ -285,3 +289,6 @@ class SearchIndex(private val map: MapRepository, private val scope: CoroutineSc
             Normalizer.normalize(s.lowercase(), Normalizer.Form.NFD).replace(MARKS, "").replace(OTHER, " ").replace(SPACES, " ").trim()
     }
 }
+
+private const val FNV_START = -3750763034362895579L
+private fun fnv(hash: Long, value: Long): Long = (hash xor value) * 1099511628211L

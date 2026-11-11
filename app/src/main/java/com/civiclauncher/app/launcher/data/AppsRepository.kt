@@ -37,6 +37,9 @@ class AppsRepository(private val context: Context, private val scope: CoroutineS
     private val _recent = MutableStateFlow(loadRecent())
     /** Las últimas apps que abriste desde Civic (la más reciente primero), para el riel de Inicio. */
     val recent: StateFlow<List<LaunchableApp>> = _recent.asStateFlow()
+    private val _favorites = MutableStateFlow(parse(sp.getString("favorites", "").orEmpty()))
+    /** Las apps del widget "Accesos" (se eligen manteniendo presionada una app). */
+    val favorites: StateFlow<List<LaunchableApp>> = _favorites.asStateFlow()
 
     init {
         val receiver = object : BroadcastReceiver() {
@@ -70,6 +73,8 @@ class AppsRepository(private val context: Context, private val scope: CoroutineS
             val installed = list.mapTo(HashSet()) { it.pkg to it.activity }
             val kept = _recent.value.filter { (it.pkg to it.activity) in installed }
             if (list.isNotEmpty() && kept.size != _recent.value.size) saveRecent(kept)
+            val keptFav = _favorites.value.filter { (it.pkg to it.activity) in installed }
+            if (list.isNotEmpty() && keptFav.size != _favorites.value.size) saveFavorites(keptFav)
         }
     }
 
@@ -98,11 +103,34 @@ class AppsRepository(private val context: Context, private val scope: CoroutineS
 
     // ------------------------------------------------------------------ Recientes
 
-    private fun loadRecent(): List<LaunchableApp> =
-        sp.getString("recent", "").orEmpty().split('\n').mapNotNull { line ->
+    private fun loadRecent(): List<LaunchableApp> = parse(sp.getString("recent", "").orEmpty())
+
+    private fun parse(text: String): List<LaunchableApp> =
+        text.split('\n').mapNotNull { line ->
             val parts = line.split('\t')
             if (parts.size == 3) LaunchableApp(parts[0], parts[1], parts[2]) else null
         }
+
+    private fun serialize(list: List<LaunchableApp>) = list.joinToString("\n") { "${it.pkg}\t${it.activity}\t${it.label}" }
+
+    fun isFavorite(app: LaunchableApp): Boolean = _favorites.value.any { it.pkg == app.pkg && it.activity == app.activity }
+
+    /** Pone o quita la app de Accesos. Falso si ya no caben más. */
+    fun toggleFavorite(app: LaunchableApp): Boolean {
+        val current = _favorites.value
+        if (isFavorite(app)) {
+            saveFavorites(current.filterNot { it.pkg == app.pkg && it.activity == app.activity })
+            return true
+        }
+        if (current.size >= MAX_FAVORITES) return false
+        saveFavorites(current + app)
+        return true
+    }
+
+    private fun saveFavorites(list: List<LaunchableApp>) {
+        _favorites.value = list
+        sp.edit().putString("favorites", serialize(list)).apply()
+    }
 
     private fun rememberRecent(app: LaunchableApp) {
         saveRecent((listOf(app) + _recent.value.filterNot { it.pkg == app.pkg }).take(MAX_RECENT))
@@ -110,7 +138,7 @@ class AppsRepository(private val context: Context, private val scope: CoroutineS
 
     private fun saveRecent(list: List<LaunchableApp>) {
         _recent.value = list
-        sp.edit().putString("recent", list.joinToString("\n") { "${it.pkg}\t${it.activity}\t${it.label}" }).apply()
+        sp.edit().putString("recent", serialize(list)).apply()
     }
 
     /** Abre una app por paquete (radio, AutoKit...). Falso si no está instalada. */
@@ -139,6 +167,7 @@ class AppsRepository(private val context: Context, private val scope: CoroutineS
 
     private companion object {
         const val MAX_RECENT = 3
+        const val MAX_FAVORITES = 6
         const val ICON_PX = 96
     }
 }

@@ -185,6 +185,67 @@ class ObdEngineTest {
         e.stop()
     }
 
+    private fun spyRun(scope: TestScope, setup: (ObdEngine) -> Unit, run: (ObdEngine) -> Unit): List<String> {
+        var spy: SpyTransport? = null
+        val clock = { scope.testScheduler.currentTime }
+        val e = ObdEngine({ SpyTransport(SimulatedElm(latencyMs = 20, clockMs = clock)).also { spy = it } }, scope.backgroundScope, clock)
+        setup(e)
+        e.start()
+        run(e)
+        e.stop()
+        return spy!!.commands.filter { it.startsWith("01") && it.length > 4 }
+    }
+
+    private fun List<String>.asking(pid: Int) =
+        count { c -> c.substring(2).let { it.substring(0, it.length - it.length % 2) }.chunked(2).contains("%02X".format(pid)) }
+
+    @Test
+    fun `en segundo plano lee mucho menos pero sigue con viaje y avisos`() = runTest {
+        val live = spyRun(this, { it.demand = PollDemand.LIVE }) { testScheduler.advanceTimeBy(30_000) }
+        val background = spyRun(this, { it.demand = PollDemand.BACKGROUND }) { testScheduler.advanceTimeBy(30_000) }
+        val rpmLive = live.asking(Pids.RPM.pid)
+        val rpmBackground = background.asking(Pids.RPM.pid)
+        assertTrue(rpmBackground in 40..65, "Unas 2 vueltas por segundo: $rpmBackground")
+        assertTrue(rpmLive > rpmBackground * 3, "En vivo $rpmLive, fondo $rpmBackground")
+        assertTrue(background.asking(Pids.COOLANT_TEMP.pid) > 0, "Los avisos necesitan la temperatura")
+    }
+
+    @Test
+    fun `lo exclusivo de Sensores solo se pide con Sensores abierto`() = runTest {
+        val closed = spyRun(this, { it.demand = PollDemand.LIVE }) { testScheduler.advanceTimeBy(20_000) }
+        assertEquals(0, closed.asking(Pids.O2_B1S1.pid), "Con Sensores cerrado no se piden las sondas")
+        val opened = spyRun(this, { it.demand = PollDemand.LIVE }) { e ->
+            testScheduler.advanceTimeBy(8_000)
+            e.demand = PollDemand.ALL
+            testScheduler.advanceTimeBy(3_000)
+        }
+        assertTrue(opened.asking(Pids.O2_B1S1.pid) > 0, "Al abrir Sensores se piden")
+    }
+
+    @Test
+    fun `un salto de la hora no cuenta como tiempo apagado`() {
+        val before = TimeMark("a", elapsedMs = 1_000, wallMs = 1_000_000)
+        assertEquals(60_000, before.msUntil(TimeMark("a", 61_000, 9_000_000_000)), "Hacia adelante: manda el contador")
+        assertEquals(60_000, before.msUntil(TimeMark("a", 61_000, 5)), "Hacia atrás: manda el contador")
+    }
+
+    @Test
+    fun `entre reinicios se usa la hora y una hora sin corregir no reinicia el viaje`() {
+        val before = TimeMark("a", elapsedMs = 900_000, wallMs = 1_000_000)
+        assertEquals(40 * 60_000L, before.msUntil(TimeMark("b", 5_000, 1_000_000 + 40 * 60_000L)))
+        assertEquals(0, before.msUntil(TimeMark("b", 5_000, 500)), "Hora de fábrica tras reiniciar")
+        val legacy = TimeMark("", 0, 1_000_000)
+        assertEquals(1_000, legacy.msUntil(TimeMark("b", 5_000, 1_001_000)), "Datos de una versión anterior")
+    }
+
+    @Test
+    fun `el viaje guarda la hora real aunque las lecturas usen el contador`() {
+        val rpm = VehicleData(values = mapOf(Pids.RPM.pid to Reading(2_000.0, 50)))
+        val trip = TripComputer()
+        val s = trip.update(rpm, nowMs = 50, wallMs = 1_700_000_000_000)
+        assertEquals(1_700_000_000_000, s.startedAtMs)
+    }
+
     @Test
     fun `los PIDs soportados se leen bien`() {
         // Ejemplo típico de un Honda: 0100 → BE 3E B8 13

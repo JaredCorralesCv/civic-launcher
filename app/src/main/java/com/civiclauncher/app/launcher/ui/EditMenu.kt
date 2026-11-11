@@ -71,7 +71,17 @@ internal fun EditMenu(
         var category by remember { mutableStateOf<WidgetCategory?>(null) }
         var choosing by remember { mutableStateOf<SportWidget?>(null) }
         /** 0: Widgets · 1: Diseño. */
-        var tab by remember { mutableStateOf(0) }
+        var tab by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+        // "Restablecer" pide confirmación: el primer toque pregunta, el segundo (en 4 s) borra.
+        var confirmReset by remember { mutableStateOf(false) }
+        androidx.compose.runtime.LaunchedEffect(confirmReset) {
+            if (confirmReset) {
+                kotlinx.coroutines.delay(4_000)
+                confirmReset = false
+            }
+        }
+        // Los widgets que no caben en este diseño se esconden hasta que los pidas.
+        var showMisfits by remember { mutableStateOf(false) }
         val shape = RoundedCornerShape(Civic.radii.xl)
         Box(Modifier.fillMaxSize().blockTouches().padding(horizontal = PAGE_GUTTER, vertical = Civic.space.m)) {
             Column(
@@ -88,7 +98,14 @@ internal fun EditMenu(
                     Spacer(Modifier.width(18.dp))
                     MenuTab("Diseño", tab == 1) { tab = 1 }
                     Spacer(Modifier.weight(1f))
-                    HeaderButton("Restablecer", primary = false, onClick = onReset)
+                    HeaderButton(if (confirmReset) "¿Seguro? Toca otra vez" else "Restablecer", primary = false) {
+                        if (confirmReset) {
+                            confirmReset = false
+                            onReset()
+                        } else {
+                            confirmReset = true
+                        }
+                    }
                     Spacer(Modifier.width(8.dp))
                     HeaderButton("Listo", primary = true, onClick = onDone)
                     Spacer(Modifier.width(4.dp))
@@ -144,8 +161,10 @@ internal fun EditMenu(
                             else -> 2
                         }
                     } else listOf(category!!)
+                    fun fitsHere(w: SportWidget) = if (target != null) target.size in w.sizes else w.sizes.any { it in sizesHere }
+                    val misfits = SportWidget.entries.count { (category == null || it.category == category) && !fitsHere(it) }
                     for (cat in cats) {
-                    val widgets = SportWidget.entries.filter { it.category == cat && (target == null || target.size in it.sizes) }
+                    val widgets = SportWidget.entries.filter { it.category == cat && (fitsHere(it) || (showMisfits && target == null)) }
                     if (widgets.isEmpty()) continue
                     item(key = "h" + cat.name) {
                         Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(top = 4.dp)) {
@@ -175,6 +194,17 @@ internal fun EditMenu(
                             }
                         }
                     }
+                    }
+                    // Al final: mostrar u ocultar los que no caben en este diseño.
+                    if (target == null && misfits > 0) {
+                        item(key = "misfits") {
+                            Box(Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
+                                HeaderButton(
+                                    if (showMisfits) "Ocultar los que no caben aquí" else "Ver los que no caben en este diseño ($misfits)",
+                                    primary = false,
+                                ) { showMisfits = !showMisfits }
+                            }
+                        }
                     }
                 }
                 }
@@ -277,7 +307,8 @@ private fun CategoryChip(label: String, selected: Boolean, onClick: () -> Unit) 
             .background(if (selected) Civic.colors.accent else Color.Transparent)
             .border(1.dp, if (selected) Color.Transparent else Civic.colors.line, RoundedCornerShape(50))
             .clickable(role = Role.Button, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            // ~46 dp de alto: se atina con el carro (antes ~34).
+            .padding(horizontal = 18.dp, vertical = 12.dp),
     )
 }
 

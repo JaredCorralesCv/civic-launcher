@@ -166,8 +166,8 @@ fun NavBanner(progress: NavProgress, rerouting: Boolean, modifier: Modifier = Mo
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val next = progress.next
-        if (rerouting || next == null) {
-            Text(if (rerouting) "Recalculando la ruta…" else "Sigue la ruta", style = Civic.type.title, color = Color.White)
+        if (rerouting || progress.noRoute || next == null) {
+            Text(if (rerouting) "Recalculando la ruta…" else if (progress.noRoute) "No hay ruta desde aquí" else "Sigue la ruta", style = Civic.type.title, color = Color.White)
             return@Row
         }
         TurnIcon(next.kind, size = if (compact) 40.dp else 56.dp, color = Color.White)

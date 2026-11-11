@@ -92,6 +92,14 @@ class LauncherPrefs(context: Context) {
         sp.edit().putBoolean("auto_hide_bar", on).apply()
     }
 
+    /**
+     * Si el celular empieza a sonar (música, un audio de WhatsApp) con la radio puesta, el audio pasa
+     * al celular. Activado por defecto: si no, los audios de WhatsApp no se oyen con la radio puesta.
+     */
+    var phoneInterruptsRadio: Boolean
+        get() = sp.getBoolean("phone_interrupts_radio", true)
+        set(v) = sp.edit().putBoolean("phone_interrupts_radio", v).apply()
+
     /** Que la música empiece sola al conectar el celular por Bluetooth (activado por defecto). */
     var autoplayBluetooth: Boolean
         get() = sp.getBoolean("autoplay_bt", true)
@@ -110,6 +118,28 @@ class LauncherPrefs(context: Context) {
     var best0to100Ms: Long
         get() = sp.getLong("best_0_100_ms", 0L)
         set(v) { sp.edit().putLong("best_0_100_ms", v).commit() }
+
+    private val _accentFromWallpaper = MutableStateFlow(sp.getBoolean("accent_wallpaper", true))
+    /** Botones y medidores toman el color principal del fondo de pantalla. */
+    val accentFromWallpaper: StateFlow<Boolean> = _accentFromWallpaper.asStateFlow()
+
+    fun setAccentFromWallpaper(on: Boolean) {
+        _accentFromWallpaper.value = on
+        sp.edit().putBoolean("accent_wallpaper", on).apply()
+    }
+
+    private val _animationMode = MutableStateFlow(
+        runCatching { com.civiclauncher.app.launcher.AnimationMode.valueOf(sp.getString("animations", null) ?: "") }
+            .getOrDefault(com.civiclauncher.app.launcher.AnimationMode.AUTO)
+            .also { com.civiclauncher.app.launcher.LowPower.setMode(it) },
+    )
+    val animationMode: StateFlow<com.civiclauncher.app.launcher.AnimationMode> = _animationMode.asStateFlow()
+
+    fun setAnimationMode(mode: com.civiclauncher.app.launcher.AnimationMode) {
+        _animationMode.value = mode
+        com.civiclauncher.app.launcher.LowPower.setMode(mode)
+        sp.edit().putString("animations", mode.name).apply()
+    }
 
     /** Ya pedimos el permiso de ubicación una vez; no insistir en cada arranque. */
     var askedLocation: Boolean

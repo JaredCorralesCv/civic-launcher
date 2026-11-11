@@ -52,7 +52,6 @@ import com.civiclauncher.app.container
 import androidx.compose.foundation.border
 import androidx.compose.runtime.LaunchedEffect
 import com.civiclauncher.app.launcher.map.CivicMap
-import com.civiclauncher.app.launcher.map.MAP_CACHE_CARD
 import com.civiclauncher.app.launcher.map.MapSetup
 import com.civiclauncher.app.launcher.map.MapStatus
 import com.civiclauncher.app.launcher.map.mapCenter
@@ -236,8 +235,6 @@ internal fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
     val lastGps = remember { arrayOf(gpsState.value) }
     val gps = if (active) gpsState.value.also { lastGps[0] = it } else lastGps[0]
     val ready = status as? MapStatus.Ready
-    // Por si copiaste el mapa por adb o USB mientras Civic estaba abierto.
-    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) { c.map.refresh() }
 
     if (ready == null) {
         HomeCard(modifier) {
@@ -246,28 +243,16 @@ internal fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
         }
         return
     }
-    LaunchedEffect(gps.lat, gps.lon) { c.map.rememberPosition(gps) }
     val (center, hasFix) = mapCenter(gps, remember { c.map.lastPosition() })
     val street = rememberStreet(gps)
     val shape = RoundedCornerShape(Civic.radii.xl)
     // Navegando: la tarjeta muestra la ruta y la siguiente vuelta en lugar de la calle actual.
     val navigating = c.nav.state.collectAsStateWithLifecycle().value as? com.civiclauncher.app.launcher.nav.NavState.Navigating
-    // Con mapa y ubicación, el índice de búsqueda de la zona se arma solo en segundo plano (un minuto
-    // después, para no estorbar al arranque): al buscar un destino ya está listo.
-    val haveFix = gps.fresh && gps.lat != null
-    LaunchedEffect(haveFix) {
-        if (haveFix) {
-            kotlinx.coroutines.delay(60_000)
-            val g = c.gps.speed.value
-            if (g.lat != null && g.lon != null) c.nav.search.prebuild(org.mapsforge.core.model.LatLong(g.lat, g.lon))
-        }
-    }
 
     // Las cápsulas encima del mapa van opacas aunque haya fondo: si no, las calles tapan el texto.
     com.civiclauncher.app.ui.design.OpaqueSurfaces { Box(modifier.clip(shape).background(Civic.colors.surface)) {
         CivicMap(
             file = ready.file,
-            cacheName = MAP_CACHE_CARD,
             center = navigating?.progress?.position ?: center,
             bearing = navigating?.progress?.bearing ?: gps.bearing,
             hasFix = hasFix || navigating != null,
@@ -280,6 +265,7 @@ internal fun MapCard(modifier: Modifier, onOpen: () -> Unit) {
             route = navigating?.route,
             routeFrom = navigating?.progress?.segment ?: 0,
             destination = navigating?.dest?.point,
+            fast = com.civiclauncher.app.launcher.map.rememberFastForMap(gps.kmh),
         )
         // Capa transparente encima del mapa: el toque abre el mapa completo en lugar de moverlo.
         Box(Modifier.fillMaxSize().clickable(onClick = onOpen))

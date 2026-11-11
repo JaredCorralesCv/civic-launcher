@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -28,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -39,6 +41,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.RoundRect
@@ -54,6 +57,10 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.round
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -69,7 +76,10 @@ import com.civiclauncher.app.launcher.obd.ObdMode
 import com.civiclauncher.app.ui.design.Civic
 import com.civiclauncher.app.ui.design.PhosphorIcons as P
 import com.civiclauncher.app.ui.design.bevelBorder
+import com.civiclauncher.app.ui.design.Tone
+import com.civiclauncher.app.ui.design.color
 import com.civiclauncher.obd.Pids
+import com.civiclauncher.obd.TripStats
 
 /**
  * Inicio "Sport": un tablero deportivo en tres columnas.
@@ -83,7 +93,7 @@ import com.civiclauncher.obd.Pids
 fun SportHome(onOpen: (Dest) -> Unit) {
     val c = LocalContext.current.container
     // Velocidad, RPM y marcha: una sola lectura para todos los widgets, congelada si Inicio no se ve.
-    val drive = rememberDriveValues()
+    val driveState = rememberDriveValues()
 
     val saved by c.launcherPrefs.sportSlots.collectAsStateWithLifecycle()
     val arrangementId by c.launcherPrefs.sportArrangement.collectAsStateWithLifecycle()
@@ -99,48 +109,51 @@ fun SportHome(onOpen: (Dest) -> Unit) {
     // Si cambias al estilo Original a media edición, no se queda abierta para la próxima vez.
     androidx.compose.runtime.DisposableEffect(Unit) { onDispose { SportLayout.stopEditing() } }
 
-    /** Un widget de cierto tamaño. [live] falso: miniatura del menú (el mapa va dibujado, no el real). */
-    @Composable
-    fun Content(widget: SportWidget, size: SlotSize, live: Boolean) {
-        val fill = Modifier.fillMaxSize()
-        // Las miniaturas del menú usan valores fijos: no leen datos ni se animan.
-        val d = if (live) drive else SAMPLE_DRIVE
-        when (widget) {
-            SportWidget.TACH -> TachCard(d.rpm, d.speed, fill) { onOpen(Dest.VEHICLE) }
-            SportWidget.TRIP -> TripCard(fill) { onOpen(Dest.VEHICLE) }
-            SportWidget.CLOCK -> ClockWidget(fill)
-            SportWidget.CLOCK_ANALOG -> AnalogClockWidget(fill)
-            SportWidget.CALENDAR -> CalendarWidget(fill)
-            SportWidget.SCREENSAVER -> ScreensaverWidget(fill, live, strip = size == SlotSize.STRIP)
-            SportWidget.SPEED_STRIP -> SpeedStrip(d, fill, if (live) ({ onOpen(Dest.VEHICLE) }) else null)
-            SportWidget.RPM_STRIP -> RpmStrip(d, fill, if (live) ({ onOpen(Dest.VEHICLE) }) else null)
-            SportWidget.ROAD -> RoadWidget(d.speed, live, fill, if (live) ({ onOpen(Dest.VEHICLE) }) else null)
-            SportWidget.FULL_CLUSTER -> ClusterScreen(d, live, fill, if (live) ({ onOpen(Dest.VEHICLE) }) else null)
-            SportWidget.FULL_GAUGES -> GaugesScreen(d, live, fill, if (live) ({ onOpen(Dest.VEHICLE) }) else null)
-            SportWidget.FULL_PERFORMANCE -> PerformanceScreen(d, live, fill, null)
-            SportWidget.STATS -> StatsWidget(fill) { onOpen(Dest.VEHICLE) }
-            SportWidget.MUSIC -> MusicWidget(fill, size) { onOpen(Dest.MUSIC) }
-            // En la miniatura, a 0 km/h: las rayas del camino no se animan.
-            SportWidget.CAR -> CenterCard(if (live) drive.speed ?: 0f else 0f, onOpen, fill)
-            SportWidget.MAP -> if (live) MapCard(fill, onOpen = { onOpen(Dest.MAP) }) else MapPreview()
-            else -> GaugeWidget(widget, d, live, fill) { onOpen(Dest.VEHICLE) }
-        }
+    val onEdit = { slot: Slot ->
+        picking = slot
+        SportLayout.menuOpen.value = true
     }
 
-    /** Un lugar: su widget y, al editar, la capa para cambiarlo. */
+    // Arrastrar un widget sobre otro: se intercambian si cada uno cabe en el lugar del otro.
+    var dragFrom by remember { mutableStateOf<Slot?>(null) }
+    var dragPos by remember { mutableStateOf(Offset.Zero) }
+    var origin by remember { mutableStateOf(Offset.Zero) }
+    val bounds = remember { HashMap<Slot, androidx.compose.ui.geometry.Rect>() }
+    val hover by remember { derivedStateOf { if (dragFrom == null) null else bounds.entries.firstOrNull { it.value.contains(dragPos) }?.key } }
+
     @Composable
     fun Place(slot: Slot, modifier: Modifier) {
-        val widget = layout.getValue(slot)
-        Box(modifier) {
-            Content(widget, slot.size, live = true)
-            if (editing) EditOverlay(widget) {
-                picking = slot
-                SportLayout.menuOpen.value = true
-            }
+        val from = dragFrom
+        val hint = when {
+            from == null -> DropHint.NONE
+            slot == from -> DropHint.SOURCE
+            SportLayout.place(layout, slot, layout.getValue(from)) == null -> DropHint.BLOCKED
+            slot == hover -> DropHint.HOVER
+            else -> DropHint.CAN_DROP
         }
+        val drag = if (!editing || menuOpen) Modifier else Modifier.dragToSwap(
+            slot to layout,
+            onStart = {
+                dragFrom = slot
+                dragPos = (bounds[slot]?.topLeft ?: Offset.Zero) + it
+            },
+            onMove = { dragPos += it },
+            onCancel = { dragFrom = null },
+            onEnd = {
+                val target = hover
+                dragFrom = null
+                if (target != null && target != slot) {
+                    SportLayout.place(layout, target, layout.getValue(slot))?.let { c.launcherPrefs.setSportSlots(SportLayout.save(saved, it)) }
+                }
+            },
+        )
+        SportPlace(
+            slot, layout.getValue(slot), editing, driveState, onOpen, onEdit, hint, drag,
+            if (editing) modifier.onGloballyPositioned { bounds[slot] = it.boundsInRoot() } else modifier,
+        )
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(if (editing) Modifier.fillMaxSize().onGloballyPositioned { origin = it.positionInRoot() } else Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxSize().padding(horizontal = PAGE_GUTTER, vertical = Civic.space.m),
             horizontalArrangement = Arrangement.spacedBy(Civic.space.m),
@@ -165,6 +178,18 @@ fun SportHome(onOpen: (Dest) -> Unit) {
                 }
                 HomeArrangement.FULL -> Place(Slot.FULL_SLOT, Modifier.fillMaxSize())
             }
+        }
+        dragFrom?.let { from ->
+            Text(
+                layout.getValue(from).label,
+                style = Civic.type.label.copy(fontWeight = FontWeight.SemiBold),
+                color = Color.White,
+                modifier = Modifier
+                    .offset { (dragPos - origin - Offset(60f, 56f)).round() }
+                    .clip(RoundedCornerShape(50))
+                    .background(Civic.colors.accent)
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+            )
         }
         if (editing && !menuOpen) {
             Row(
@@ -192,9 +217,57 @@ fun SportHome(onOpen: (Dest) -> Unit) {
                 onClearTarget = { picking = null },
                 onClose = { SportLayout.menuOpen.value = false; picking = null },
                 onDone = { SportLayout.stopEditing(); picking = null },
-                preview = { w, size -> Content(w, size, live = false) },
+                preview = { w, size -> SportSlotContent(w, size, live = false, driveState, onOpen) },
             )
         }
+    }
+}
+
+/** Un lugar de Inicio: su widget y, al editar, la capa para cambiarlo. */
+@Composable
+private fun SportPlace(slot: Slot, widget: SportWidget, editing: Boolean, drive: State<DriveValues>, onOpen: (Dest) -> Unit, onEdit: (Slot) -> Unit, hint: DropHint, drag: Modifier, modifier: Modifier) {
+    // Las pantallas completas usan el toque largo para otras cosas (borrar el récord).
+    val press = if (!editing && slot.size != SlotSize.FULL) Modifier.longPressToEdit(ENTER_EDITING) else Modifier
+    Box(modifier.then(press)) {
+        SportSlotContent(widget, slot.size, live = true, drive, onOpen)
+        if (editing) EditOverlay(widget, hint, drag) { onEdit(slot) }
+    }
+}
+
+private val ENTER_EDITING = { SportLayout.editing.value = true }
+
+
+/**
+ * Un widget de cierto tamaño. [live] falso: miniatura del menú (valores fijos, sin animación, y el
+ * mapa va dibujado). Velocidad y RPM solo se leen en los widgets que las usan: un reloj o el mapa ya
+ * no se vuelven a armar cada vez que cambia la velocidad.
+ */
+@Composable
+private fun SportSlotContent(widget: SportWidget, size: SlotSize, live: Boolean, drive: State<DriveValues>, onOpen: (Dest) -> Unit) {
+    val fill = Modifier.fillMaxSize()
+    fun d() = if (live) drive.value else SAMPLE_DRIVE
+    val toVehicle = if (live) ({ onOpen(Dest.VEHICLE) }) else null
+    val roadSpeed = { if (live) drive.value.speed ?: 0f else 0f }
+    when (widget) {
+        SportWidget.TACH -> TachCard(d().rpm, d().speed, live, fill) { onOpen(Dest.VEHICLE) }
+        SportWidget.TRIP -> TripCard(fill, live) { onOpen(Dest.VEHICLE) }
+        SportWidget.CLOCK -> ClockWidget(fill)
+        SportWidget.CLOCK_ANALOG -> AnalogClockWidget(fill)
+        SportWidget.CALENDAR -> CalendarWidget(fill)
+        SportWidget.SCREENSAVER -> ScreensaverWidget(fill, live, strip = size == SlotSize.STRIP)
+        SportWidget.SPEED_STRIP -> SpeedStrip(d(), fill, toVehicle)
+        SportWidget.RPM_STRIP -> RpmStrip(d(), fill, toVehicle)
+        SportWidget.ROAD -> RoadWidget(roadSpeed, live, fill, toVehicle)
+        SportWidget.FULL_CLUSTER -> ClusterScreen(d(), live, fill, toVehicle)
+        SportWidget.FULL_GAUGES -> GaugesScreen(d(), live, fill, toVehicle)
+        SportWidget.FULL_PERFORMANCE -> PerformanceScreen(d(), live, fill, null)
+        SportWidget.STATS -> StatsWidget(fill, live) { onOpen(Dest.VEHICLE) }
+        SportWidget.PHOTO -> CarPhotoWidget(d().speed, live, fill) { onOpen(Dest.VEHICLE) }
+        SportWidget.MUSIC -> MusicWidget(fill, size) { onOpen(Dest.MUSIC) }
+        SportWidget.ACCESS -> AccessWidget(fill, strip = size == SlotSize.STRIP, live) { onOpen(Dest.APPS) }
+        SportWidget.CAR -> CenterCard(roadSpeed, onOpen, fill, live)
+        SportWidget.MAP -> if (live) MapCard(fill, onOpen = { onOpen(Dest.MAP) }) else MapPreview()
+        else -> GaugeWidget(widget, d(), live, fill) { onOpen(Dest.VEHICLE) }
     }
 }
 
@@ -241,77 +314,98 @@ private fun Caps(text: String, color: Color = Civic.colors.textFaint) {
  * una punta de luz. En medio, una línea de marcas que se encienden con las RPM (luz de cambio).
  */
 @Composable
-private fun TachCard(rpm: Float?, speed: Float?, modifier: Modifier, onClick: () -> Unit) {
-    val rpmF by gaugeFraction(rpm, TACH_MAX, live = true)
-    val spdF by gaugeFraction(speed, SPEED_MAX, live = true)
+private fun TachCard(rpm: Float?, speed: Float?, live: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val rpmF by gaugeFraction(rpm, TACH_MAX, live)
+    val spdF by gaugeFraction(speed, SPEED_MAX, live)
     val ink = if (Civic.colors.isDark) Color.White else Color(0xFF15181D)
     val redline = rpm != null && rpm >= TACH_RED
-    SportSurface(modifier, onClick) {
-        Canvas(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp)) {
+    SportSurface(modifier, if (live) onClick else null) {
+        val inset = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp)
+        // Capa fija: las líneas apagadas y las marcas sin encender.
+        Canvas(inset.staticLayer(live)) {
+            val stroke = 3.dp.toPx()
+            for (top in listOf(true, false)) {
+                val g = bracketGeometry(top, size.width, size.height, 3.5.dp.toPx())
+                drawPath(g.path, ink.copy(alpha = 0.13f), style = Stroke(stroke, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                drawCircle(ink.copy(alpha = 0.30f), g.dot, g.end)
+                drawCircle(ink.copy(alpha = 0.30f), g.dot, g.start)
+            }
+            forEachMark(size.width) { _, x0, w -> drawLine(ink.copy(alpha = 0.12f), Offset(x0, size.height / 2f), Offset(x0 + w, size.height / 2f), strokeWidth = stroke) }
+        }
+        // Capa que se mueve. Trazos, medidores y degradados se crean una vez por tamaño.
+        Spacer(inset.drawWithCache {
             val w = size.width
             val h = size.height
             val stroke = 3.dp.toPx()
+            val top = bracketGeometry(true, w, h, 3.5.dp.toPx())
+            val bottom = bracketGeometry(false, w, h, 3.5.dp.toPx())
             val rpmBrush = Brush.horizontalGradient(
                 0f to Color.White, 0.40f to Color(0xFFFFC9C9), 0.62f to Color(0xFFFFB3A6),
                 0.74f to SPORT_AMBER, 0.86f to SPORT_RED, 1f to SPORT_RED,
                 startX = 0f, endX = w,
             )
             val speedBrush = Brush.horizontalGradient(0f to Color.White, 0.5f to Color(0xFFB8FFD6), 1f to Color(0xFF5BF0A0), startX = 0f, endX = w)
-            bracket(top = true, w, h, rpmF, rpmBrush, if (redline) SPORT_RED else Color(0xFFFFD6D6), ink, stroke)
-            bracket(top = false, w, h, spdF, speedBrush, Color(0xFF7CFFB8), ink, stroke)
-            // Línea de marcas al centro: blancas y luego ámbar hacia el corte. Se encienden con las RPM.
-            val marks = 44
-            val step = w / marks
-            val markW = step * 0.45f
-            val y = h / 2f
-            for (i in 0 until marks) {
-                val at = (i + 0.5f) / marks
-                val col = when {
-                    at * TACH_MAX >= TACH_RED -> SPORT_RED
-                    at * TACH_MAX >= TACH_SHIFT -> SPORT_AMBER
-                    at > 0.45f -> Color(0xFFFFE2B8)
-                    else -> Color.White
+            val strokes = BracketStrokes(stroke)
+            onDrawBehind {
+                bracketFill(top, rpmF, rpmBrush, if (redline) SPORT_RED else Color(0xFFFFD6D6), strokes)
+                bracketFill(bottom, spdF, speedBrush, Color(0xFF7CFFB8), strokes)
+                val fr = rpmF
+                forEachMark(w) { at, x0, mw ->
+                    if (at > fr) return@forEachMark
+                    val col = when {
+                        at * TACH_MAX >= TACH_RED -> SPORT_RED
+                        at * TACH_MAX >= TACH_SHIFT -> SPORT_AMBER
+                        at > 0.45f -> Color(0xFFFFE2B8)
+                        else -> Color.White
+                    }
+                    drawLine(col, Offset(x0, h / 2f), Offset(x0 + mw, h / 2f), strokeWidth = stroke)
                 }
-                val lit = at <= rpmF
-                val x0 = step * i + (step - markW) / 2f
-                drawLine(
-                    if (lit) col else ink.copy(alpha = 0.12f),
-                    Offset(x0, y), Offset(x0 + markW, y),
-                    strokeWidth = 3.dp.toPx(),
-                )
             }
-        }
-        BoxWithConstraints(Modifier.fillMaxSize()) {
-            Column(Modifier.align(Alignment.TopCenter).offset(y = maxHeight * 0.13f), horizontalAlignment = Alignment.CenterHorizontally) {
+        })
+        val number = Civic.type.title.copy(fontSize = 34.sp, lineHeight = 36.sp, fontWeight = FontWeight.Normal, fontFeatureSettings = "tnum", letterSpacing = 0.01.em)
+        val unit = Civic.type.caption.copy(fontSize = 9.sp, lineHeight = 11.sp, letterSpacing = 0.3.em)
+        Column(Modifier.fillMaxSize()) {
+            Column(Modifier.weight(1f).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Text(
-                    rpm?.let { "%.0f".format(it) } ?: "--",
-                    style = Civic.type.title.copy(fontSize = 34.sp, lineHeight = 36.sp, fontWeight = FontWeight.Normal, fontFeatureSettings = "tnum", letterSpacing = 0.01.em),
+                    rpm?.let { Math.round(it).toString() } ?: "--",
+                    style = number,
                     color = when {
                         rpm == null -> Civic.colors.textFaint
                         redline -> SPORT_RED
                         else -> Civic.colors.text
                     },
                 )
-                Text("RPM", style = Civic.type.caption.copy(fontSize = 9.sp, lineHeight = 11.sp, letterSpacing = 0.3.em), color = Civic.colors.textDim)
+                Text("RPM", style = unit, color = Civic.colors.textDim)
             }
-            Column(Modifier.align(Alignment.BottomCenter).offset(y = -maxHeight * 0.13f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    speed?.let { "%.0f".format(it) } ?: "--",
-                    style = Civic.type.title.copy(fontSize = 34.sp, lineHeight = 36.sp, fontWeight = FontWeight.Normal, fontFeatureSettings = "tnum", letterSpacing = 0.01.em),
-                    color = if (speed != null) Civic.colors.text else Civic.colors.textFaint,
-                )
-                Text("KM/H", style = Civic.type.caption.copy(fontSize = 9.sp, lineHeight = 11.sp, letterSpacing = 0.3.em), color = Civic.colors.textDim)
+            Column(Modifier.weight(1f).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Text(speed?.let { Math.round(it).toString() } ?: "--", style = number, color = if (speed != null) Civic.colors.text else Civic.colors.textFaint)
+                Text("KM/H", style = unit, color = Civic.colors.textDim)
             }
         }
     }
 }
 
-/**
- * Un corchete de línea fina (diagonal, recta, diagonal) con un punto en cada extremo. Se ilumina de
- * izquierda a derecha según [fraction], con resplandor y una punta de luz.
- */
-private fun DrawScope.bracket(top: Boolean, w: Float, h: Float, fraction: Float, fill: Brush, tip: Color, ink: Color, stroke: Float) {
-    val dot = 3.5.dp.toPx()
+/** La fila de marcas del centro: [block] recibe posición (0–1), x y ancho de cada marca. */
+private inline fun forEachMark(w: Float, block: (at: Float, x0: Float, width: Float) -> Unit) {
+    val marks = 44
+    val step = w / marks
+    val markW = step * 0.45f
+    for (i in 0 until marks) block((i + 0.5f) / marks, step * i + (step - markW) / 2f, markW)
+}
+
+private class BracketGeometry(val path: Path, val measure: PathMeasure, val start: Offset, val end: Offset, val dot: Float) {
+    /** Se reutiliza en cada cuadro: crear un trazo nuevo era basura para el recolector. */
+    val part = Path()
+}
+
+private class BracketStrokes(stroke: Float) {
+    val line = Stroke(stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    val glow = Stroke(stroke * 2.6f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    val wide = Stroke(stroke * 5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+}
+
+/** Un corchete de línea fina (diagonal, recta, diagonal), con un punto en cada extremo. */
+private fun bracketGeometry(top: Boolean, w: Float, h: Float, dot: Float): BracketGeometry {
     val edgeY = if (top) dot else h - dot
     val endY = if (top) h * 0.24f else h * 0.76f
     val start = Offset(dot, endY)
@@ -322,33 +416,51 @@ private fun DrawScope.bracket(top: Boolean, w: Float, h: Float, fraction: Float,
         lineTo(w * 0.76f, edgeY)
         lineTo(end.x, end.y)
     }
-    drawPath(path, ink.copy(alpha = 0.13f), style = Stroke(stroke, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    drawCircle(ink.copy(alpha = 0.30f), dot, end)
-    if (fraction < 0.004f) {
-        drawCircle(ink.copy(alpha = 0.30f), dot, start)
-        return
-    }
-    val measure = PathMeasure().apply { setPath(path, false) }
-    val len = measure.length * fraction
-    val part = Path()
-    measure.getSegment(0f, len, part, true)
+    return BracketGeometry(path, PathMeasure().apply { setPath(path, false) }, start, end, dot)
+}
+
+/** La parte iluminada del corchete, de izquierda a derecha, con resplandor y una punta de luz. */
+private fun DrawScope.bracketFill(g: BracketGeometry, fraction: Float, fill: Brush, tip: Color, strokes: BracketStrokes) {
+    if (fraction < 0.004f) return
+    val len = g.measure.length * fraction
+    g.part.reset()
+    g.measure.getSegment(0f, len, g.part, true)
     // Resplandor en capas (la Mali-450 no difumina por hardware): de ancho y tenue a fino y brillante.
-    drawPath(part, fill, alpha = 0.10f, style = Stroke(stroke * 5f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    drawPath(part, fill, alpha = 0.22f, style = Stroke(stroke * 2.6f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    drawPath(part, fill, style = Stroke(stroke, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    drawCircle(Color.White, dot, start)
-    val p = measure.getPosition(len)
-    drawCircle(tip.copy(alpha = 0.18f), dot * 3.2f, p)
-    drawCircle(tip.copy(alpha = 0.40f), dot * 1.9f, p)
-    drawCircle(Color.White, dot * 1.05f, p)
+    drawPath(g.part, fill, alpha = 0.10f, style = strokes.wide)
+    drawPath(g.part, fill, alpha = 0.22f, style = strokes.glow)
+    drawPath(g.part, fill, style = strokes.line)
+    drawCircle(Color.White, g.dot, g.start)
+    val p = g.measure.getPosition(len)
+    drawCircle(tip.copy(alpha = 0.18f), g.dot * 3.2f, p)
+    drawCircle(tip.copy(alpha = 0.40f), g.dot * 1.9f, p)
+    drawCircle(Color.White, g.dot * 1.05f, p)
 }
 
 // =================================================================== Viaje
 
+/** El viaje ya convertido a lo que se ve: si los textos no cambian, la tarjeta no se vuelve a armar. */
+@androidx.compose.runtime.Immutable
+private data class TripView(val km: String, val driving: String, val avg: String, val max: String, val idle: String)
+
+private fun TripStats.view() = TripView(
+    km = if (distanceKm >= 100) Math.round(distanceKm).toString() else "%.1f".format(distanceKm),
+    driving = sportDuration(drivingMs),
+    avg = avgSpeedKmh?.let { Math.round(it).toString() } ?: "--",
+    max = if (maxSpeedKmh > 0) Math.round(maxSpeedKmh).toString() else "--",
+    idle = sportDuration(idleMs),
+)
+
+private val SAMPLE_TRIP = TripStats(startedAtMs = 1, drivingMs = 3_300_000, distanceKm = 42.7, fuelLiters = 3.4, maxSpeedKmh = 118.0, idleMs = 420_000)
+
 @Composable
-private fun TripCard(modifier: Modifier, onClick: () -> Unit) {
-    val trip by LocalContext.current.container.obd.tripStats.collectAsStateWithLifecycle()
-    SportSurface(modifier, onClick) {
+private fun rememberTrip(live: Boolean): State<TripStats> =
+    if (live) LocalContext.current.container.obd.tripStats.collectWhenVisible() else remember { mutableStateOf(SAMPLE_TRIP) }
+
+@Composable
+private fun TripCard(modifier: Modifier, live: Boolean, onClick: () -> Unit) {
+    val tripState = rememberTrip(live)
+    val trip by remember { derivedStateOf { tripState.value.view() } }
+    SportSurface(modifier, if (live) onClick else null) {
         Row(Modifier.fillMaxSize()) {
             // Bloque claro con la distancia: lo que más se lee del viaje.
             Column(
@@ -362,7 +474,7 @@ private fun TripCard(modifier: Modifier, onClick: () -> Unit) {
                 Text("Viaje", style = Civic.type.label.copy(fontSize = 14.sp), color = Color(0xFF2A2F37))
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        if (trip.distanceKm >= 100) "%.0f".format(trip.distanceKm) else "%.1f".format(trip.distanceKm),
+                        trip.km,
                         style = Civic.type.title.copy(fontSize = 34.sp, lineHeight = 36.sp, fontWeight = FontWeight.SemiBold, fontFeatureSettings = "tnum", letterSpacing = (-0.02).em),
                         color = Color(0xFF0E1116),
                         maxLines = 1,
@@ -371,15 +483,15 @@ private fun TripCard(modifier: Modifier, onClick: () -> Unit) {
                     Spacer(Modifier.width(3.dp))
                     Text("km", style = Civic.type.label, color = Color(0xFF2A2F37), maxLines = 1, softWrap = false, modifier = Modifier.padding(bottom = 5.dp))
                 }
-                Text(sportDuration(trip.drivingMs), style = Civic.type.bodySmall.copy(fontFeatureSettings = "tnum"), color = Color(0xFF2A2F37))
+                Text(trip.driving, style = Civic.type.bodySmall.copy(fontFeatureSettings = "tnum"), color = Color(0xFF2A2F37))
             }
             Column(
                 Modifier.weight(1f).fillMaxHeight().padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.SpaceEvenly,
             ) {
-                TripLine(trip.avgSpeedKmh?.let { "%.0f".format(it) } ?: "--", "Prom. km/h")
-                TripLine(if (trip.maxSpeedKmh > 0) "%.0f".format(trip.maxSpeedKmh) else "--", "Máx. km/h")
-                TripLine(sportDuration(trip.idleMs), "En ralentí")
+                TripLine(trip.avg, "Prom. km/h")
+                TripLine(trip.max, "Máx. km/h")
+                TripLine(trip.idle, "En ralentí")
             }
         }
     }
@@ -400,80 +512,97 @@ private fun sportDuration(ms: Long): String {
 
 // =================================================================== Centro: el carro
 
+/**
+ * El centro, en piezas que leen cada una lo suyo: antes, cualquier dato nuevo volvía a armar toda la
+ * tarjeta, camino y carro incluidos.
+ */
 @Composable
-private fun CenterCard(speed: Float, onOpen: (Dest) -> Unit, modifier: Modifier) {
-    val c = LocalContext.current.container
-    val config by c.obd.config.collectAsStateWithLifecycle()
-    val obdState by c.obd.state.collectAsStateWithLifecycle()
-    val dataState = c.obd.data.collectAsStateWithLifecycle()
-    val live by c.obd.live.collectAsStateWithLifecycle()
-    val trip by c.obd.tripStats.collectAsStateWithLifecycle()
-    val diag by c.obd.diagnostics.collectAsStateWithLifecycle()
-    val connected = obdState is EngineState.Connected
-    val coolant by remember(connected) {
-        derivedStateOf { if (connected) dataState.value[Pids.COOLANT_TEMP].fresh()?.value?.let { Math.round(it).toDouble() } else null }
-    }
-    val battery by remember { derivedStateOf { dataState.value.battery.fresh(30_000)?.value?.let { Math.round(it * 10) / 10.0 } } }
-    val running by remember { derivedStateOf { (dataState.value[Pids.RPM].fresh()?.value ?: 0.0) > 500 } }
-    val alert = live.alerts.firstOrNull()
-
+private fun CenterCard(speed: () -> Float, onOpen: (Dest) -> Unit, modifier: Modifier, live: Boolean) {
     SportSurface(modifier) {
         Column(Modifier.fillMaxSize().padding(16.dp)) {
             // Arriba: el estado del carro y la hora.
             Row(verticalAlignment = Alignment.CenterVertically) {
-                val (text, color) = when {
-                    config.mode == ObdMode.NONE -> "Sin adaptador OBD" to Civic.colors.textDim
-                    alert != null -> alert.title to if (alert.level == AlertLevel.DANGER) Civic.colors.bad else Civic.colors.warn
-                    !connected -> "OBD sin conexión" to Civic.colors.textDim
-                    diag.stored.isNotEmpty() -> (if (diag.stored.size == 1) "1 código de falla" else "${diag.stored.size} códigos de falla") to Civic.colors.warn
-                    else -> "Sin fallas" to Civic.colors.ok
-                }
-                StatusChip(text, color) { onOpen(Dest.VEHICLE) }
+                CarStatusChip(live) { onOpen(Dest.VEHICLE) }
                 Spacer(Modifier.weight(1f))
                 ClockChip()
             }
             Spacer(Modifier.height(12.dp))
             Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(Civic.radii.l))) {
-                RoadView(speed, Modifier.fillMaxSize())
+                RoadView(speed, live, Modifier.fillMaxSize())
                 // Accesos discretos en las esquinas del camino (este Inicio no tiene riel).
                 CornerButton(P.SquaresFourLight, "Todas las apps", Modifier.align(Alignment.TopStart).padding(10.dp)) { onOpen(Dest.APPS) }
                 CornerButton(P.GearSixLight, "Ajustes", Modifier.align(Alignment.TopEnd).padding(10.dp)) { onOpen(Dest.SETTINGS) }
             }
             Spacer(Modifier.height(14.dp))
-            Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = "Abrir vehículo") { onOpen(Dest.VEHICLE) }) {
-                Readout(
-                    "Batería", battery?.let { "%.1f".format(it) } ?: "--", "V",
-                    when {
-                        battery == null -> Civic.colors.textFaint
-                        battery!! < 11.9 -> Civic.colors.bad
-                        running && battery!! < 13.0 -> Civic.colors.warn
-                        else -> Civic.colors.ok
-                    },
-                )
-                Readout(
-                    "Motor", coolant?.let { "%.0f".format(it) } ?: "--", "°C",
-                    when {
-                        coolant == null -> Civic.colors.textFaint
-                        coolant!! >= 105 -> Civic.colors.bad
-                        coolant!! >= 100 -> Civic.colors.warn
-                        coolant!! < 70 -> Civic.colors.cool
-                        else -> Civic.colors.ok
-                    },
-                )
-                Readout(
-                    "Consumo",
-                    live.kmPerLiter?.let { if (it >= 99) "∞" else "%.1f".format(it) } ?: live.litersPerHour?.let { "%.1f".format(it) } ?: "--",
-                    when {
-                        live.kmPerLiter != null -> "km/L"
-                        live.litersPerHour != null -> "L/h"
-                        else -> ""
-                    },
-                    if (live.kmPerLiter != null || live.litersPerHour != null) Civic.colors.text else Civic.colors.textFaint,
-                )
-            }
+            CarReadouts(live) { onOpen(Dest.VEHICLE) }
             Spacer(Modifier.height(12.dp))
-            EfficiencyBar(trip.avgKmPerLiter, trip.fuelLiters)
+            EfficiencyBar(live)
         }
+    }
+}
+
+@Composable
+private fun CarStatusChip(live: Boolean, onClick: () -> Unit) {
+    if (!live) {
+        StatusChip("Sin fallas", Tone.Ok.color(), onClick)
+        return
+    }
+    val c = LocalContext.current.container
+    val config = c.obd.config.collectWhenVisible()
+    val state = c.obd.state.collectWhenVisible()
+    val derived = c.obd.live.collectWhenVisible()
+    val diag = c.obd.diagnostics.collectWhenVisible()
+    val status by remember {
+        derivedStateOf {
+            val alert = derived.value.alerts.firstOrNull()
+            val stored = diag.value.stored.size
+            when {
+                config.value.mode == ObdMode.NONE -> "Sin adaptador OBD" to Tone.Neutral
+                alert != null -> alert.title to if (alert.level == AlertLevel.DANGER) Tone.Bad else Tone.Warn
+                state.value !is EngineState.Connected -> "OBD sin conexión" to Tone.Neutral
+                stored > 0 -> (if (stored == 1) "1 código de falla" else "$stored códigos de falla") to Tone.Warn
+                else -> "Sin fallas" to Tone.Ok
+            }
+        }
+    }
+    StatusChip(status.first, status.second.color(), onClick)
+}
+
+@Composable
+private fun CarReadouts(live: Boolean, onClick: () -> Unit) {
+    val now by rememberCarNow(live)
+    val battery = now.battery
+    val coolant = now.coolant
+    Row(Modifier.fillMaxWidth().clickable(enabled = live, role = Role.Button, onClickLabel = "Abrir vehículo", onClick = onClick)) {
+        Readout(
+            "Batería", battery?.let { "%.1f".format(it) } ?: "--", "V",
+            when {
+                battery == null -> Civic.colors.textFaint
+                battery < 11.9 -> Civic.colors.bad
+                now.running && battery < 13.0 -> Civic.colors.warn
+                else -> Civic.colors.ok
+            },
+        )
+        Readout(
+            "Motor", coolant?.let { Math.round(it).toString() } ?: "--", "°C",
+            when {
+                coolant == null -> Civic.colors.textFaint
+                coolant >= 105 -> Civic.colors.bad
+                coolant >= 100 -> Civic.colors.warn
+                coolant < 70 -> Civic.colors.cool
+                else -> Civic.colors.ok
+            },
+        )
+        Readout(
+            "Consumo",
+            now.kmPerLiter?.let { if (it >= 99) "∞" else "%.1f".format(it) } ?: now.litersPerHour?.let { "%.1f".format(it) } ?: "--",
+            when {
+                now.kmPerLiter != null -> "km/L"
+                now.litersPerHour != null -> "L/h"
+                else -> ""
+            },
+            if (now.kmPerLiter != null || now.litersPerHour != null) Civic.colors.text else Civic.colors.textFaint,
+        )
     }
 }
 
@@ -518,7 +647,7 @@ private fun CornerButton(icon: ImageVector, label: String, modifier: Modifier, o
     val pressed by source.collectIsPressedAsState()
     Box(
         modifier
-            .size(44.dp)
+            .size(52.dp)
             .clip(CircleShape)
             .background(if (pressed) Color.White.copy(alpha = 0.22f) else Color.Black.copy(alpha = 0.35f))
             .clickable(source, indication = null, role = Role.Button, onClickLabel = label, onClick = onClick),
@@ -543,10 +672,16 @@ private fun RowScope.Readout(label: String, value: String, unit: String, color: 
 
 /** Rendimiento promedio del viaje en una barra (20 km/L = llena) y la gasolina usada. */
 @Composable
-private fun EfficiencyBar(kmPerLiter: Double?, liters: Double) {
+private fun EfficiencyBar(live: Boolean) {
+    val tripState = rememberTrip(live)
+    val view by remember {
+        derivedStateOf { tripState.value.avgKmPerLiter?.let { Math.round(it * 10) / 10.0 } to Math.round(tripState.value.fuelLiters * 10) / 10.0 }
+    }
+    val kmPerLiter = view.first
+    val liters = view.second
     // El promedio cambia un poquito en cada lectura del OBD: los cambios chicos van de golpe (un
     // cuadro); antes reiniciaban una animación sin fin (~45 cuadros por segundo solo por esta barra).
-    val f by gaugeFraction(kmPerLiter?.let { Math.round(it * 10) / 10f }, 20f, live = true)
+    val f by gaugeFraction(kmPerLiter?.toFloat(), 20f, live)
     val ink = if (Civic.colors.isDark) Color.White else Color(0xFF15181D)
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -580,20 +715,21 @@ private fun EfficiencyBar(kmPerLiter: Double?, liters: Double) {
  * rayas del centro, que bajan a la velocidad a la que vas (detenido, quietas: no gasta cuadros).
  */
 @Composable
-private fun RoadView(speed: Float, modifier: Modifier) {
+private fun RoadView(speed: () -> Float, live: Boolean, modifier: Modifier) {
     val active = LocalScreenActive.current
     val phase = remember { mutableFloatStateOf(0f) }
-    val moving = active && speed > 2f
-    LaunchedEffect(moving, (speed / 5).toInt()) {
+    val latest = androidx.compose.runtime.rememberUpdatedState(speed)
+    // Se lee la velocidad solo para saber si se mueve: cada km/h ya no vuelve a armar el camino.
+    val moving by remember(live, active) { derivedStateOf { live && active && latest.value() > 2f } }
+    LaunchedEffect(moving) {
         if (!moving) return@LaunchedEffect
         var last = 0L
-        // Rayas a ~1/6 de la velocidad real en pantalla: se nota que avanzas sin marear.
-        val pxPerSec = speed / 3.6f * 6f
         while (true) {
-            // ~20 cuadros por segundo bastan para que se vea fluido y cuestan la mitad que 60 (en el
-            // emulador se dibujaban ~47 por segundo solo por las rayas).
+            // ~20 cuadros por segundo bastan para que se vea fluido y cuestan la mitad que 60.
             kotlinx.coroutines.delay(50)
             withFrameNanos { t ->
+                // Rayas a ~1/6 de la velocidad real en pantalla: se nota que avanzas sin marear.
+                val pxPerSec = latest.value() / 3.6f * 6f
                 if (last != 0L) phase.floatValue = (phase.floatValue + pxPerSec * (t - last) / 1e9f) % 1000f
                 last = t
             }
@@ -603,7 +739,7 @@ private fun RoadView(speed: Float, modifier: Modifier) {
     val grain = remember { androidx.compose.ui.graphics.ShaderBrush(androidx.compose.ui.graphics.ImageShader(asphaltGrain(), androidx.compose.ui.graphics.TileMode.Repeated, androidx.compose.ui.graphics.TileMode.Repeated)) }
     // Tres capas (ver RoadWidget): solo la de las rayas se redibuja al avanzar.
     Box(modifier) {
-    Canvas(Modifier.fillMaxSize().graphicsLayer()) {
+    Canvas(Modifier.fillMaxSize().staticLayer(live)) {
         val w = size.width
         val h = size.height
         // Asfalto.
@@ -657,7 +793,7 @@ private fun RoadView(speed: Float, modifier: Modifier) {
             y += unit
         }
     }
-    Canvas(Modifier.fillMaxSize().graphicsLayer()) {
+    Canvas(Modifier.fillMaxSize().staticLayer(live)) {
         val w = size.width
         val h = size.height
         topViewCar(Offset(w / 2f, h * 0.54f), h * 0.70f)

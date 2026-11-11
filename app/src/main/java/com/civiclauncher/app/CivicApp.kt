@@ -26,14 +26,19 @@ class CivicApp : Application() {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
-        // Cada vez que la app arranca (encendido, despertar, o si el sistema la cerró), reanuda el OBD.
-        if (container.obd.config.value.mode != ObdMode.NONE) ObdService.start(this)
         // Al encender el carro, volver a Inicio (el sistema abre el launcher original al apagar).
         com.civiclauncher.app.launcher.WakeWatcher.register(this)
         // Compilar Civic a código nativo una vez por versión (en Android 8.1 corre interpretado).
         container.optimizer.runIfNeeded()
         // Al conectar el celular por Bluetooth, que la música empiece sola.
         com.civiclauncher.app.launcher.media.PhoneWatcher.register(this)
+        // Después del primer cuadro: arrancar la pantalla es lo primero que se tiene que ver.
+        android.os.Handler(mainLooper).postDelayed({
+            // Cada vez que la app arranca (encendido, despertar, o si el sistema la cerró), reanuda el OBD.
+            if (container.obd.config.value.mode != ObdMode.NONE) ObdService.start(this)
+            // Saber qué suena desde el arranque, no solo cuando se abre la tarjeta de música.
+            container.media.refresh()
+        }, DEFERRED_START_MS)
         // El arranque rápido de Autochips mata las apps al quitar la llave y no siempre las revive.
         // Cada vez que el proceso renace (por la pantalla, un aviso o el sistema), reanudamos el monitor.
         if (container.prefs.accMonitorEnabled) {
@@ -57,6 +62,8 @@ class CivicApp : Application() {
         }
     }
 }
+
+private const val DEFERRED_START_MS = 1_200L
 
 /**
  * Inyección de dependencias manual: un solo lugar donde se crean los objetos compartidos.
@@ -85,7 +92,7 @@ class AppContainer(context: Context) {
     val carPhoto by lazy { com.civiclauncher.app.launcher.data.CarPhotoRepository(context, appScope) }
 
     // Música en Inicio
-    val media by lazy { com.civiclauncher.app.launcher.media.MediaRepository(context, appScope) }
+    val media by lazy { com.civiclauncher.app.launcher.media.MediaRepository(context, appScope) { launcherPrefs.phoneInterruptsRadio } }
     val radio by lazy { com.civiclauncher.app.launcher.media.RadioRepository(context, appScope) { media.yieldToOtherSource() } }
     val demoMedia by lazy { com.civiclauncher.app.diag.DemoMediaSession(context) }
 
