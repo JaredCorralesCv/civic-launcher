@@ -88,6 +88,17 @@ class DiagnosticsTest {
     }
 
     @Test
+    fun `corte de inyeccion por el estado del combustible`() {
+        val now = 10_000L
+        fun data(vararg v: Pair<PidSpec, Double>) = VehicleData(values = v.associate { (s, x) -> s.pid to Reading(x, now) })
+        val coasting = data(Pids.RPM to 1_800.0, Pids.SPEED to 50.0, Pids.THROTTLE to 12.0, Pids.INTAKE_MAP to 25.0, Pids.FUEL_SYSTEM to 4.0)
+        assertEquals(0.0, FuelModel.litersPerHour(coasting, now))
+        // Mismo pie fuera pero en lazo cerrado: sí gasta (por ejemplo, bajando una pendiente suave).
+        val closed = data(Pids.RPM to 1_800.0, Pids.SPEED to 50.0, Pids.THROTTLE to 12.0, Pids.INTAKE_MAP to 25.0, Pids.FUEL_SYSTEM to 2.0)
+        assertTrue(FuelModel.litersPerHour(closed, now)!! > 0.1)
+    }
+
+    @Test
     fun `marcha estimada`() {
         assertEquals(1, GearEstimator.estimate(1_990.0, 20.0))
         assertEquals(3, GearEstimator.estimate(1_905.0, 50.0))

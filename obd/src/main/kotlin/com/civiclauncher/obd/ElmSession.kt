@@ -14,25 +14,92 @@ interface ObdTransport {
     suspend fun close()
 }
 
-/** Lo que se sabe del carro después de la primera consulta. */
-data class Detection(val protocol: String, val supported: Set<Int>)
+/** Lo que se sabe del carro después de la primera consulta. [protocolCode]: el número del ELM ("6"). */
+data class Detection(val protocol: String, val supported: Set<Int>, val protocolCode: String? = null)
 
 /**
  * Habla con un ELM327: lo configura y hace consultas una por una (el ELM no acepta dos a la vez).
  * [ObdEngine] decide qué preguntar y cuándo.
  */
-class ElmSession(private val transport: ObdTransport) {
+class ElmSession(private val transport: ObdTransport, private val log: ObdLog? = null) {
     private val lock = Mutex()
+    private var protocolCommand = "ATSP0"
+    /** Mientras se configura no se busca "el adaptador se reinició" (ATZ contesta justo eso). */
+    private var configuring = false
+
+    /** Veces que el adaptador se reinició a media sesión y se volvió a configurar. */
+    var resets: Int = 0
+        private set
+
+    /** Todo pasa por aquí: queda en el registro y, si el adaptador se reinició, se vuelve a configurar. */
+    private suspend fun talk(command: String, timeoutMs: Long = 3_000): String {
+        val r = rawSend(command, timeoutMs)
+        if (!configuring && looksReset(r, command)) {
+            resets++
+            log?.note("El adaptador se reinició (eco o letrero ELM327): se vuelve a configurar")
+            configure()
+            return rawSend(command, timeoutMs)
+        }
+        return r
+    }
+
+    private suspend fun rawSend(command: String, timeoutMs: Long): String {
+        val started = System.nanoTime()
+        val r = transport.send(command, timeoutMs)
+        log?.add(command, r, (System.nanoTime() - started) / 1_000_000)
+        return r
+    }
+
+    /**
+     * Un bajón de voltaje al dar marcha puede reiniciar el adaptador: vuelve con el eco encendido (la
+     * primera línea repite el comando) o saluda con "ELM327". Sin reconfigurarlo, las respuestas
+     * dejan de entenderse hasta reconectar.
+     */
+    private fun looksReset(reply: String, command: String): Boolean {
+        val lines = ElmParser.cleanLines(reply)
+        return lines.any { it.startsWith("ELM327") } || lines.firstOrNull()?.replace(" ", "") == command.uppercase().replace(" ", "")
+    }
+
+    /** ATE0, ATL0… y el protocolo. Si un comando no contesta "OK", se repite una vez; si tampoco, falla. */
+    private suspend fun configure() {
+        configuring = true
+        try {
+            for (cmd in INIT_COMMANDS) {
+                if (!isOk(rawSend(cmd, 3_000)) && !isOk(rawSend(cmd, 3_000))) {
+                    throw java.io.IOException("El adaptador no aceptó la configuración ($cmd)")
+                }
+            }
+            // Un protocolo recordado que el adaptador no acepte: búsqueda automática normal.
+            if (!isOk(rawSend(protocolCommand, 3_000))) {
+                protocolCommand = "ATSP0"
+                rawSend(protocolCommand, 3_000)
+            }
+        } finally {
+            configuring = false
+        }
+    }
+
+    private fun isOk(reply: String) = reply.uppercase().contains("OK")
 
     /** Identificación del adaptador (respuesta a ATZ), disponible después de [start]. */
     var adapterId: String = ""
         private set
 
-    suspend fun start() = lock.withLock {
+    /**
+     * [protocolHint]: el protocolo con el que el carro contestó la vez pasada ("6"). Con "ATSPA6" el
+     * adaptador lo prueba primero y solo si falla busca entre todos: ahorra segundos al encender.
+     */
+    suspend fun start(protocolHint: String? = null) = lock.withLock {
         transport.open()
+        protocolCommand = protocolHint?.takeIf { it.length == 1 && it[0].isLetterOrDigit() }?.let { "ATSPA$it" } ?: "ATSP0"
+        configuring = true
         // ATZ reinicia el adaptador y tarda más que los demás comandos.
-        adapterId = ElmParser.cleanLines(transport.send("ATZ", timeoutMs = 5_000)).lastOrNull().orEmpty()
-        INIT_COMMANDS.forEach { transport.send(it) }
+        adapterId = try {
+            ElmParser.cleanLines(rawSend("ATZ", 5_000)).lastOrNull().orEmpty()
+        } finally {
+            configuring = false
+        }
+        configure()
     }
 
     /**
@@ -40,15 +107,16 @@ class ElmSession(private val transport: ObdTransport) {
      * aprendemos qué datos existen. Devuelve null si el carro no contesta (llave quitada).
      */
     suspend fun detect(): Detection? = lock.withLock {
-        val first = transport.send("0100", timeoutMs = 12_000)
+        val first = talk("0100", timeoutMs = 12_000)
         if (ElmParser.isCarSilent(first)) return@withLock null
         val supported = ElmParser.parseSupported(first, 0x00)?.toMutableSet() ?: return@withLock null
-        // Los PIDs 0x20 y 0x40 indican si hay otra tanda de PIDs que preguntar.
-        for (base in listOf(0x20, 0x40)) {
+        // Los PIDs 0x20, 0x40… indican si hay otra tanda de PIDs que preguntar (hasta el odómetro, 0xA6).
+        for (base in listOf(0x20, 0x40, 0x60, 0x80, 0xA0)) {
             if (base !in supported) break
-            ElmParser.parseSupported(transport.send("01%02X".format(base)), base)?.let { supported += it } ?: break
+            ElmParser.parseSupported(talk("01%02X".format(base)), base)?.let { supported += it } ?: break
         }
-        Detection(ElmParser.protocolName(transport.send("ATDPN")), supported)
+        val dpn = talk("ATDPN")
+        Detection(ElmParser.protocolName(dpn), supported, ElmParser.protocolCode(dpn))
     }
 
     /**
@@ -70,11 +138,11 @@ class ElmSession(private val transport: ObdTransport) {
      */
     private suspend fun ask(command: String, timeoutMs: Long = 3_000, frames: Int = 1): String {
         if (fastReply) {
-            val r = transport.send(command + frames.coerceIn(1, 15).toString(16).uppercase(), timeoutMs)
+            val r = talk(command + frames.coerceIn(1, 15).toString(16).uppercase(), timeoutMs)
             if (ElmParser.cleanLines(r).none { it == "?" }) return r
             fastReply = false
         }
-        return transport.send(command, timeoutMs)
+        return talk(command, timeoutMs)
     }
 
     suspend fun query(spec: PidSpec): ObdResult = lock.withLock {
@@ -113,12 +181,12 @@ class ElmSession(private val transport: ObdTransport) {
     }
 
     suspend fun batteryVoltage(): ObdResult = lock.withLock {
-        ElmParser.parseVoltage(transport.send("ATRV"))
+        ElmParser.parseVoltage(talk("ATRV"))
     }
 
     /** Códigos de falla: modo 03 guardados, 07 pendientes, 0A permanentes. null = no se pudo leer. */
     suspend fun readDtcs(mode: Int, can: Boolean): List<String>? = lock.withLock {
-        ElmParser.parseDtcs(transport.send("%02X".format(mode), timeoutMs = 5_000), mode + 0x40, can)
+        ElmParser.parseDtcs(talk("%02X".format(mode), timeoutMs = 5_000), mode + 0x40, can)
     }
 
     /**
@@ -127,12 +195,12 @@ class ElmSession(private val transport: ObdTransport) {
      * llave en ON es lo recomendado. Devuelve true si el carro confirmó (respuesta 44).
      */
     suspend fun clearDtcs(): Boolean = lock.withLock {
-        ElmParser.cleanLines(transport.send("04", timeoutMs = 5_000)).any { it.replace(" ", "").startsWith("44") }
+        ElmParser.cleanLines(talk("04", timeoutMs = 5_000)).any { it.replace(" ", "").startsWith("44") }
     }
 
     /** Número de serie del carro (VIN). null si el carro no lo da (algunos modelos viejos). */
     suspend fun readVin(): String? = lock.withLock {
-        ElmParser.parseVin(transport.send("0902", timeoutMs = 5_000))
+        ElmParser.parseVin(talk("0902", timeoutMs = 5_000))
     }
 
     suspend fun stop() = lock.withLock { transport.close() }
@@ -140,10 +208,10 @@ class ElmSession(private val transport: ObdTransport) {
     companion object {
         /**
          * ATE0 sin eco · ATL0 sin saltos de línea extra · ATS0 sin espacios · ATH0 sin encabezados ·
-         * ATAT1 tiempos de espera adaptativos (más rápido) · ATSP0 protocolo automático
-         * (tu Civic 2008 debería salir como CAN 11 bits 500 kbps).
+         * ATAT1 tiempos de espera adaptativos (más rápido). Después va el protocolo: el recordado
+         * o ATSP0, automático (tu Civic 2008 debería salir como CAN 11 bits 500 kbps).
          */
-        val INIT_COMMANDS = listOf("ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATSP0")
+        val INIT_COMMANDS = listOf("ATE0", "ATL0", "ATS0", "ATH0", "ATAT1")
         /** El estándar (ISO 15765-4) permite hasta 6 PIDs por pregunta. */
         const val MAX_MULTI = 6
 

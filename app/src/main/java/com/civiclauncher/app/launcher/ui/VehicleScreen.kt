@@ -589,6 +589,17 @@ private fun SensorsTab(dataState: State<VehicleData>) {
         verticalArrangement = Arrangement.spacedBy(Civic.space.s),
         modifier = Modifier.fillMaxSize(),
     ) {
+        item(span = { GridItemSpan(maxLineSpan) }, key = "rate") {
+            val rate by obd.readRate.collectAsStateWithLifecycle()
+            if (rate > 0f) {
+                Text(
+                    "%.1f lecturas por segundo".format(rate),
+                    style = Civic.type.caption,
+                    color = Civic.colors.textDim,
+                    modifier = Modifier.padding(start = 4.dp),
+                )
+            }
+        }
         groups.forEach { (group, items) ->
             item(span = { GridItemSpan(maxLineSpan) }, key = group.name) {
                 Label(group.label, Modifier.padding(top = Civic.space.s, start = 4.dp))

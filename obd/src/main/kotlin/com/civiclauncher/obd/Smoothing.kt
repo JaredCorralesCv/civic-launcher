@@ -50,7 +50,7 @@ class AlertFilter(
             // El voltaje baja un momento con cada carga eléctrica: solo si dura un minuto es de verdad.
             "charge" -> 120_000
             "lowbat" -> 10_000
-            "warm" -> 5_000
+            "warm" -> 30_000
             "hot" -> 2_000
             else -> 0 // foco Check Engine y RPM altas: de inmediato
         }
@@ -84,8 +84,15 @@ class GearTracker(initial: DoubleArray = GearEstimator.defaultRatios()) {
     /** Las relaciones aprendidas (RPM por km/h de cada marcha), para guardarlas. */
     val learned: DoubleArray get() = ratios.copyOf()
 
-    fun update(rpm: Double?, speedKmh: Double?, nowMs: Long): Int? {
-        val gear = if (rpm == null || speedKmh == null || speedKmh < 8 || rpm < 900) null else match(rpm / speedKmh, GearEstimator.tolerance(speedKmh))
+    /**
+     * [throttle]: con el acelerador a fondo el convertidor de torque patina, y la relación de ese
+     * momento no es la de la marcha. Solo se aprende en crucero: arriba de 40 km/h (convertidor ya
+     * bloqueado) y con el acelerador suave.
+     */
+    fun update(rpm: Double?, speedKmh: Double?, nowMs: Long, throttle: Double? = null): Int? {
+        val cruising = speedKmh != null && speedKmh >= LEARN_MIN_KMH && (throttle == null || throttle < LEARN_MAX_THROTTLE)
+        val gear = if (rpm == null || speedKmh == null || speedKmh < 8 || rpm < GearEstimator.MIN_RPM) null
+        else match(rpm / speedKmh, GearEstimator.tolerance(speedKmh), cruising)
         if (gear != null) {
             lastMatchAt = nowMs
             if (gear != candidate) {
@@ -100,13 +107,13 @@ class GearTracker(initial: DoubleArray = GearEstimator.defaultRatios()) {
         return shown
     }
 
-    private fun match(ratio: Double, tolerance: Double): Int? {
+    private fun match(ratio: Double, tolerance: Double, canLearn: Boolean): Int? {
         steady = if (previousRatio > 0 && abs(ratio - previousRatio) / previousRatio < STEADY_ERROR) steady + 1 else 0
         previousRatio = ratio
         val best = ratios.indices.minBy { abs(ratios[it] - ratio) }
         val error = abs(ratios[best] - ratio) / ratios[best]
         if (error >= tolerance) return null
-        if (steady >= STEADY_READINGS) {
+        if (canLearn && steady >= STEADY_READINGS) {
             ratios[best] = (ratios[best] * (1 - LEARN_RATE) + ratio * LEARN_RATE)
                 .coerceIn(base[best] * MIN_FACTOR, base[best] * MAX_FACTOR)
         }
@@ -122,6 +129,8 @@ class GearTracker(initial: DoubleArray = GearEstimator.defaultRatios()) {
         const val STEADY_ERROR = 0.015
         const val STEADY_READINGS = 3
         const val LEARN_RATE = 0.02
+        const val LEARN_MIN_KMH = 40.0
+        const val LEARN_MAX_THROTTLE = 30.0
         const val MIN_FACTOR = 0.85
         const val MAX_FACTOR = 1.15
     }

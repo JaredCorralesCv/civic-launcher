@@ -292,6 +292,64 @@ class ObdEngineTest {
     }
 
     @Test
+    fun `si el adaptador se reinicia a media sesion se vuelve a configurar`() = runTest {
+        val clock = { testScheduler.currentTime }
+        val log = ObdLog(clock = clock)
+        val e = ObdEngine({ SimulatedElm(latencyMs = 20, clockMs = clock, resetAfterCommands = 120) }, backgroundScope, clock, log = log)
+        e.start()
+        advanceTimeBy(15_000)
+        val throttle = e.data.value[Pids.THROTTLE]
+        assertNotNull(throttle)
+        assertTrue(throttle!!.atMs > 13_000, "Siguen llegando datos tras el reinicio")
+        assertTrue(log.snapshot().any { it.command == "#" && it.reply.contains("reinició") }, "Queda en el registro")
+        e.stop()
+    }
+
+    @Test
+    fun `recuerda el protocolo y mide las lecturas por segundo`() = runTest {
+        val clock = { testScheduler.currentTime }
+        var saved: String? = null
+        var spy: SpyTransport? = null
+        val e = ObdEngine(
+            { SpyTransport(SimulatedElm(latencyMs = 20, clockMs = clock)).also { spy = it } }, backgroundScope, clock,
+            protocolHint = { "6" }, onProtocol = { saved = it },
+        )
+        e.start()
+        advanceTimeBy(12_000)
+        assertEquals("6", saved)
+        assertTrue("ATSPA6" in spy!!.commands, "Prueba primero el protocolo de la vez pasada")
+        assertTrue(e.readRate.value > 2f, "Lecturas por segundo: ${e.readRate.value}")
+        e.stop()
+        assertEquals(0f, e.readRate.value)
+    }
+
+    @Test
+    fun `sin adaptador espera mucho mas tras varios intentos y encender la pantalla lo despierta`() = runTest {
+        val clock = { testScheduler.currentTime }
+        var tries = 0
+        val e = ObdEngine({ tries++; throw IOException("sin adaptador") }, backgroundScope, clock)
+        e.start()
+        advanceTimeBy(200_000)
+        val before = tries
+        assertTrue(before in 7..9, "Intentos en 200 s: $before")
+        advanceTimeBy(100_000)
+        assertEquals(before, tries, "En espera larga no intenta")
+        e.retryNow()
+        advanceTimeBy(100)
+        assertEquals(before + 1, tries, "Encender la pantalla lo hace intentar ya")
+        e.stop()
+    }
+
+    @Test
+    fun `codigos de dos computadoras se juntan`() {
+        // La primera dice "0 códigos", la segunda trae un P0420: antes se perdía.
+        val raw = "4300\r43010420\r\r>"
+        assertEquals(listOf("P0420"), ElmParser.parseDtcs(raw, 0x43, can = true))
+        val supported = ElmParser.parseSupported("4100BE3EB813\r410000000001\r\r>", 0x00)!!
+        assertTrue(0x20 in supported && 0x0C in supported)
+    }
+
+    @Test
     fun `cuantas tramas trae cada pregunta`() {
         assertEquals(1, ElmSession.framesFor(listOf(Pids.RPM, Pids.SPEED)))
         assertEquals(2, ElmSession.framesFor(listOf(Pids.RPM, Pids.SPEED, Pids.THROTTLE, Pids.ENGINE_LOAD)))

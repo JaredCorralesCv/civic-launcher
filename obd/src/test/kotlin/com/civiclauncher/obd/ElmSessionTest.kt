@@ -23,7 +23,7 @@ class ElmSessionTest {
         val t = RecordingTransport(mapOf("ATZ" to "ATZ\r\rELM327 v1.5\r\r>"))
         val session = ElmSession(t)
         session.start()
-        assertEquals(listOf("ATZ") + ElmSession.INIT_COMMANDS, t.sent)
+        assertEquals(listOf("ATZ") + ElmSession.INIT_COMMANDS + "ATSP0", t.sent)
         assertEquals("ELM327 V1.5", session.adapterId)
     }
 

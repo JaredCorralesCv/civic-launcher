@@ -30,7 +30,9 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
@@ -46,6 +48,7 @@ data class LiveDerived(
 )
 
 private const val NEW_TRIP_AFTER_MS = 30 * 60_000L
+private const val ALERT_REFRESH_MS = 5_000L
 
 data class ObdConfig(val mode: ObdMode, val address: String? = null, val name: String? = null)
 
@@ -67,7 +70,11 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
 
     private val engine = MutableStateFlow<ObdEngine?>(null)
     private var wantRunning = false
-    private var screenOn = true
+    // El estado real: si Android revive el servicio con la pantalla apagada, no hay que sondear.
+    private var screenOn = (context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager)?.isInteractive != false
+
+    /** Las últimas preguntas al adaptador y sus respuestas (se exporta desde Ajustes). */
+    val log = com.civiclauncher.obd.ObdLog()
 
     val state: StateFlow<EngineState> = engine
         .flatMapLatest { it?.state ?: flowOf(EngineState.Stopped) }
@@ -76,6 +83,11 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
     val data: StateFlow<VehicleData> = engine
         .flatMapLatest { it?.data ?: flowOf(VehicleData()) }
         .stateIn(scope, SharingStarted.Eagerly, VehicleData())
+
+    /** Lecturas completas por segundo; 0 sin conexión. */
+    val readRate: StateFlow<Float> = engine
+        .flatMapLatest { it?.readRate ?: flowOf(0f) }
+        .stateIn(scope, SharingStarted.WhileSubscribed(5_000), 0f)
 
     /** VIN, foco Check Engine y códigos de falla. Se conserva aunque el motor se detenga. */
     val diagnostics: StateFlow<Diagnostics> = engine
@@ -170,7 +182,7 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
         _live.value = LiveDerived(
             kmPerLiter = tenth(FuelModel.kmPerLiter(d, now)),
             litersPerHour = tenth(FuelModel.litersPerHour(d, now)),
-            gear = gears.update(d[Pids.RPM].freshAt(now)?.value, d[Pids.SPEED].freshAt(now)?.value, now),
+            gear = gears.update(d[Pids.RPM].freshAt(now)?.value, d[Pids.SPEED].freshAt(now)?.value, now, d[Pids.THROTTLE].freshAt(now)?.value),
             alerts = alertFilter.update(VehicleAlerts.evaluate(d, diagnostics.value, now), now),
         )
     }
@@ -205,6 +217,8 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
             override fun onReceive(c: Context, intent: Intent) {
                 screenOn = intent.action == Intent.ACTION_SCREEN_ON
                 apply()
+                // Si estaba esperando para reintentar (adaptador sin conectar), que lo intente ya.
+                if (screenOn) engine.value?.retryNow()
             }
         }
         val filter = IntentFilter().apply {
@@ -214,6 +228,18 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
         // Los cálculos (viaje, consumo, marcha, avisos) van fuera del hilo de la pantalla.
         scope.launch(calc) { data.collect { onData(it) } }
+        // Sin conexión no llegan datos, y los avisos se quedaban congelados (un "Motor sobrecalentado"
+        // seguía en pantalla con el adaptador desconectado). Se recalculan con lo último, que ya es viejo.
+        scope.launch(calc) {
+            state.collectLatest { s ->
+                if (s is EngineState.Connected) return@collectLatest
+                while (true) {
+                    val now = SystemClock.elapsedRealtime()
+                    _live.value = LiveDerived(alerts = alertFilter.update(VehicleAlerts.evaluate(data.value, diagnostics.value, now), now))
+                    delay(ALERT_REFRESH_MS)
+                }
+            }
+        }
     }
 
     private fun loadConfig(): ObdConfig {
@@ -253,7 +279,14 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
         // El ciclo del OBD (decenas de preguntas y respuestas por segundo) corre en su propio hilo:
         // la pantalla solo recibe los resultados.
         val e = engine.value
-            ?: ObdEngine(transportFactory = { transportFor(c) }, scope = engineScope, clock = SystemClock::elapsedRealtime).also { engine.value = it }
+            ?: ObdEngine(
+                transportFactory = { transportFor(c) },
+                scope = engineScope,
+                clock = SystemClock::elapsedRealtime,
+                log = log,
+                protocolHint = { sp.getString(protocolKey(c), null) },
+                onProtocol = { sp.edit().putString(protocolKey(c), it).apply() },
+            ).also { engine.value = it }
         e.demand = demand()
         e.start()
     }
@@ -284,8 +317,33 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
 
     private val engineScope = CoroutineScope(scope.coroutineContext + Dispatchers.Default)
 
+    private fun protocolKey(c: ObdConfig) = "protocol_${c.address ?: c.mode.name}"
+
     private fun transportFor(c: ObdConfig): ObdTransport = when (c.mode) {
-        ObdMode.BLUETOOTH -> BluetoothSppTransport(context, c.address ?: error("Falta el adaptador"))
+        ObdMode.BLUETOOTH -> {
+            val address = c.address ?: error("Falta el adaptador")
+            BluetoothSppTransport(
+                context, address,
+                preferredMethod = sp.getInt("spp_$address", -1).takeIf { it >= 0 },
+                onConnected = { method -> sp.edit().putInt("spp_$address", method).apply() },
+            )
+        }
         else -> SimulatedElm(latencyMs = 40)
     }
+
+    /** Guarda el registro en Android/data/com.civiclauncher.app/files/obd-registro.txt. null si no se pudo. */
+    fun exportLog(): java.io.File? = runCatching {
+        val file = java.io.File(context.getExternalFilesDir(null) ?: context.filesDir, "obd-registro.txt")
+        val time = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
+        file.bufferedWriter().use { w ->
+            val c = _config.value
+            w.write("Civic · registro del OBD\n")
+            w.write("Adaptador: ${c.name ?: c.address ?: c.mode.name} · estado: ${state.value} · ${"%.1f".format(java.util.Locale.US, readRate.value)} lecturas/s\n")
+            w.write("Hora · tardó · comando → respuesta (\\r = salto de línea; # = nota)\n\n")
+            for (e in log.snapshot()) {
+                w.write("${time.format(java.util.Date(e.atMs))}  ${e.tookMs.toString().padStart(4)} ms  ${e.command} → ${e.reply}\n")
+            }
+        }
+        file
+    }.getOrNull()
 }

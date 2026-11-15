@@ -57,14 +57,17 @@ object ElmParser {
         val lines = cleanLines(raw)
         if (lines.any { it == "NO DATA" } || ERRORS.any { e -> lines.any { it.startsWith(e) } }) return null
         val expected = "41%02X".format(base)
+        // Cada computadora que contesta (motor, transmisión…) dice los suyos: se juntan.
+        var out: MutableSet<Int>? = null
         for (line in lines) {
             val hex = line.replace(" ", "")
             val idx = hex.indexOf(expected)
             if (idx < 0 || hex.length < idx + expected.length + 8) continue
             val bits = hex.substring(idx + expected.length, idx + expected.length + 8).toLongOrNull(16) ?: continue
-            return (0 until 32).filter { i -> (bits shr (31 - i)) and 1L == 1L }.map { base + it + 1 }.toSet()
+            val set = out ?: mutableSetOf<Int>().also { out = it }
+            (0 until 32).filter { i -> (bits shr (31 - i)) and 1L == 1L }.forEach { set += base + it + 1 }
         }
-        return null
+        return out
     }
 
     /** Si el carro no contesta (llave quitada o computadora dormida), el ELM dice alguna de estas. */
@@ -75,6 +78,10 @@ object ElmParser {
                 l.startsWith("BUS INIT") && l.contains("ERROR") || l.startsWith("BUS ERROR") || l.startsWith("STOPPED")
         }
     }
+
+    /** ATDPN → "6" (sin la "A" de automático), o null si no se entendió. */
+    fun protocolCode(raw: String): String? =
+        cleanLines(raw).firstOrNull()?.removePrefix("A")?.trim()?.takeIf { it.length == 1 && it[0].isLetterOrDigit() }
 
     /** ATDPN: número del protocolo detectado. "A6" = automático, CAN 11 bits 500 kbps. */
     fun protocolName(raw: String): String {
@@ -126,6 +133,39 @@ object ElmParser {
     }
 
     private val FRAME = Regex("^[0-9A-F]{1,2}:.*")
+    /** El largo total que el ELM pone antes de una respuesta de varias tramas ("014"). */
+    private val LENGTH = Regex("^[0-9A-F]{3}$")
+
+    /**
+     * Separa la respuesta en mensajes, uno por computadora que contestó: cada línea corta es uno, y
+     * cada grupo de tramas "0:", "1:"… es otro. En hexadecimal sin espacios.
+     */
+    internal fun messages(raw: String): List<String> {
+        val out = mutableListOf<String>()
+        var current: StringBuilder? = null
+        fun flush() {
+            current?.let { if (it.isNotEmpty()) out += it.toString() }
+            current = null
+        }
+        for (line in cleanLines(raw)) {
+            when {
+                FRAME.matches(line) -> {
+                    if (line.substringBefore(':').trim().toInt(16) == 0 || current == null) {
+                        flush()
+                        current = StringBuilder()
+                    }
+                    current!!.append(line.substringAfter(':').replace(" ", ""))
+                }
+                LENGTH.matches(line) -> flush()
+                else -> {
+                    flush()
+                    out += line.replace(" ", "")
+                }
+            }
+        }
+        flush()
+        return out
+    }
 
     /**
      * Códigos de falla del modo 03 (guardados), 07 (pendientes) o 0A (permanentes).
@@ -134,8 +174,24 @@ object ElmParser {
      * Devuelve null si no se pudo leer; lista vacía = sin códigos.
      */
     fun parseDtcs(raw: String, responseMode: Int, can: Boolean): List<String>? {
-        if (cleanLines(raw).any { it == "NO DATA" }) return emptyList()
-        val bytes = payload(raw, responseMode) ?: return null
+        val lines = cleanLines(raw)
+        if (lines.any { it == "NO DATA" }) return emptyList()
+        if (lines.isEmpty() || ERRORS.any { e -> lines.any { it.startsWith(e) } }) return null
+        // Cada computadora manda su lista (con su propia cantidad al inicio): se leen todas y se juntan.
+        // Antes solo contaba la primera: si decía "0 códigos", los de la segunda se perdían.
+        val mode = "%02X".format(responseMode)
+        val lists = messages(raw).mapNotNull { hex ->
+            val start = hex.indexOf(mode)
+            if (start < 0 || start % 2 != 0) return@mapNotNull null
+            val body = hex.substring(start)
+            val bytes = IntArray(body.length / 2) { i -> body.substring(i * 2, i * 2 + 2).toIntOrNull(16) ?: return@mapNotNull null }
+            dtcsOf(bytes, can)
+        }
+        if (lists.isEmpty()) return null
+        return lists.flatten().distinct()
+    }
+
+    private fun dtcsOf(bytes: IntArray, can: Boolean): List<String> {
         val pairs = if (can) {
             val count = bytes.getOrNull(1) ?: return emptyList()
             (0 until count).mapNotNull { i ->

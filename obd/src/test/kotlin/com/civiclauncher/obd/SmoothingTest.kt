@@ -54,6 +54,20 @@ class SmoothingTest {
     }
 
     @Test
+    fun `no aprende con el convertidor patinando`() {
+        val g = GearTracker()
+        val base = GearEstimator.defaultRatios()[1]
+        // Acelerando fuerte a 30 km/h: la relación sale 10 % más alta por el patinaje.
+        repeat(400) { i -> g.update(base * 1.1 * 30.0, 30.0, i * 200L, throttle = 70.0) }
+        assertEquals(base, g.learned[1], 0.001, "No se movió")
+    }
+
+    @Test
+    fun `en trafico lento a 700 rpm ya hay marcha`() {
+        assertEquals(1, GearEstimator.estimate(700.0, 7.5) ?: GearEstimator.estimate(750.0, 8.0))
+    }
+
+    @Test
     fun `aprende llantas mas grandes`() {
         // Llantas 5 % más grandes: a la misma RPM vas 5 % más rápido (la relación baja 5 %).
         val g = GearTracker()

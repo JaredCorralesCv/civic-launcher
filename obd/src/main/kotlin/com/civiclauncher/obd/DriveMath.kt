@@ -48,7 +48,12 @@ object FuelModel {
         val throttle = data[Pids.THROTTLE].freshAt(nowMs)?.value
         val speed = data[Pids.SPEED].freshAt(nowMs)?.value ?: 0.0
         val load = data[Pids.ENGINE_LOAD].freshAt(nowMs)?.value
-        if (speed > 20 && rpm != null && rpm > 1_300 && (load != null && load < 12) && (throttle == null || throttle < 16)) return 0.0
+        // La computadora lo dice: sistema de combustible en 4 (lazo abierto) con el pie fuera del acelerador
+        // y en movimiento = corte de inyección. Sin ese dato, se adivina con la carga baja.
+        val fuelSystem = data[Pids.FUEL_SYSTEM].freshAt(nowMs, 3_000)?.value?.toInt()
+        val footOff = throttle == null || throttle < 16
+        if (speed > 15 && rpm != null && rpm > 1_100 && footOff && fuelSystem == 4) return 0.0
+        if (fuelSystem == null && speed > 20 && rpm != null && rpm > 1_300 && (load != null && load < 12) && footOff) return 0.0
         val lambda = data[Pids.COMMANDED_AFR].freshAt(nowMs)?.value?.takeIf { it in 0.7..1.3 } ?: 1.0
         return air / (AFR * lambda) / FUEL_DENSITY_G_PER_L * 3600
     }
@@ -72,6 +77,9 @@ object GearEstimator {
     /** RPM por cada km/h en cada marcha (antes era la tabla de la manual: en tu automático no cuadraba la 1a). */
     private val RPM_PER_KMH = doubleArrayOf(99.3, 57.1, 38.1, 26.9, 19.6)
 
+    /** En D, avanzando despacio, el motor va a ~700 rpm: con 900 la marcha no salía en tráfico. */
+    const val MIN_RPM = 650.0
+
     /** Cambia si cambia la tabla: así no se cargan relaciones aprendidas con otra. */
     const val TABLE_ID = "at5"
 
@@ -86,7 +94,7 @@ object GearEstimator {
     fun defaultRatios(): DoubleArray = RPM_PER_KMH.copyOf()
 
     fun estimate(rpm: Double?, speedKmh: Double?): Int? {
-        if (rpm == null || speedKmh == null || speedKmh < 8 || rpm < 900) return null
+        if (rpm == null || speedKmh == null || speedKmh < 8 || rpm < MIN_RPM) return null
         val ratio = rpm / speedKmh
         val best = RPM_PER_KMH.indices.minBy { abs(RPM_PER_KMH[it] - ratio) }
         val error = abs(RPM_PER_KMH[best] - ratio) / RPM_PER_KMH[best]
@@ -163,6 +171,9 @@ data class TimeMark(val bootId: String, val elapsedMs: Long, val wallMs: Long) {
         else (now.wallMs - wallMs).coerceAtLeast(0)
 }
 
+const val WARM_C = 105.0
+const val HOT_C = 110.0
+
 /** Con el motor encendido y por debajo de esto un buen rato, el alternador no está cargando. */
 const val CHARGE_WARN_V = 12.2
 
@@ -177,8 +188,10 @@ object VehicleAlerts {
         val rpm = data[Pids.RPM].freshAt(nowMs)?.value
         val battery = data.battery?.takeIf { nowMs - it.atMs < 30_000 }?.value
         if (diag.milOn) add(VehicleAlert("mil", AlertLevel.WARN, "Foco Check Engine encendido", "${diag.stored.size.coerceAtLeast(diag.dtcCount)} código(s) de falla. Revisa Diagnóstico."))
-        if (coolant != null && coolant >= 108) add(VehicleAlert("hot", AlertLevel.DANGER, "Motor sobrecalentado", "%.0f °C. Oríllate y apaga el motor.".format(coolant)))
-        else if (coolant != null && coolant >= 102) add(VehicleAlert("warm", AlertLevel.WARN, "Motor muy caliente", "%.0f °C. Vigila la temperatura.".format(coolant)))
+        // En tráfico con el aire puesto un Honda llega a ~100-103 °C antes de que entre el ventilador:
+        // eso es normal. Aviso desde 105 °C sostenidos; peligro desde 110 °C.
+        if (coolant != null && coolant >= HOT_C) add(VehicleAlert("hot", AlertLevel.DANGER, "Motor sobrecalentado", "%.0f °C. Oríllate y apaga el motor.".format(coolant)))
+        else if (coolant != null && coolant >= WARM_C) add(VehicleAlert("warm", AlertLevel.WARN, "Motor muy caliente", "%.0f °C. Vigila la temperatura.".format(coolant)))
         // Los Honda de esos años bajan el alternador a propósito (~12.4-12.8 V) con poca carga eléctrica,
         // y el voltaje lo mide el adaptador (±0.3 V): con 13.0 V el aviso salía sin falla de verdad.
         if (battery != null && rpm != null && rpm > 500 && battery < CHARGE_WARN_V) add(VehicleAlert("charge", AlertLevel.WARN, "La batería no está cargando", "%.1f V con el motor encendido. Revisa el alternador.".format(battery)))

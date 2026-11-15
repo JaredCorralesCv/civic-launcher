@@ -24,7 +24,11 @@ class SimulatedElm(
     private val fastReply: Boolean = true,
     /** Imita un adaptador barato que solo entrega la primera trama de una respuesta larga. */
     private val cutLongReplies: () -> Boolean = { false },
+    /** Imita un adaptador que se reinicia (bajón de voltaje) tras esta cantidad de comandos: vuelve el eco. */
+    private val resetAfterCommands: Int? = null,
 ) : ObdTransport {
+    private var commands = 0
+    private var echo = false
     private val startedAt = clockMs()
     private var open = false
 
@@ -40,7 +44,11 @@ class SimulatedElm(
         check(open) { "El adaptador simulado está cerrado" }
         if (latencyMs > 0) delay(latencyMs)
         val cmd = command.trim().uppercase().replace(" ", "")
-        return reply(cmd) + "\r\r>"
+        commands++
+        if (resetAfterCommands != null && commands == resetAfterCommands) echo = true
+        if (cmd == "ATE0" || cmd == "ATZ") echo = cmd != "ATE0" && echo
+        val body = reply(cmd)
+        return (if (echo) "$cmd\r" else "") + body + "\r\r>"
     }
 
     private fun reply(cmd: String): String {

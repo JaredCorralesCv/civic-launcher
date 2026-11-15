@@ -26,8 +26,16 @@ import java.util.UUID
  *  2. emparejado (algunos adaptadores lo exigen; PIN normal: 1234 o 0000),
  *  3. canal 1 directo (truco clásico para clones de ELM327 que no anuncian el servicio).
  */
-class BluetoothSppTransport(private val context: Context, private val address: String) : ObdTransport {
+class BluetoothSppTransport(
+    private val context: Context,
+    private val address: String,
+    /** La forma de conectar que funcionó la vez pasada (0, 1 o 2): se prueba primero. */
+    private val preferredMethod: Int? = null,
+    private val onConnected: (Int) -> Unit = {},
+) : ObdTransport {
     @Volatile private var socket: BluetoothSocket? = null
+    /** Se cerró desde fuera (pantalla apagada, cambio de adaptador): no seguir probando formas. */
+    @Volatile private var closed = false
     private var input: InputStream? = null
     private var output: OutputStream? = null
 
@@ -47,16 +55,22 @@ class BluetoothSppTransport(private val context: Context, private val address: S
             { d -> d.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType).invoke(d, 1) as BluetoothSocket },
         )
         var lastError: Exception? = null
-        for (make in attempts) {
-            val s = runCatching { make(device) }.getOrNull() ?: continue
+        // Primero la que funcionó la vez pasada: cada intento fallido ocupa la radio unos segundos.
+        val order = attempts.indices.sortedBy { if (it == preferredMethod) -1 else it }
+        for (i in order) {
+            if (closed) throw IOException("Conexión cancelada")
+            val s = runCatching { attempts[i](device) }.getOrNull() ?: continue
+            // Guardado antes de conectar: así close() puede soltar un connect() que se quedó esperando.
+            socket = s
             try {
                 s.connect()
-                socket = s
                 input = s.inputStream
                 output = s.outputStream
+                onConnected(i)
                 return@withContext
             } catch (e: Exception) {
                 lastError = e
+                socket = null
                 runCatching { s.close() }
             }
         }
@@ -73,9 +87,16 @@ class BluetoothSppTransport(private val context: Context, private val address: S
         out.flush()
         coroutineScope {
             var timedOut = false
-            // Una lectura de Bluetooth no se puede interrumpir: si tarda demasiado, cerramos el socket.
+            // Una lectura de Bluetooth no se puede interrumpir. Si tarda demasiado, primero un empujón:
+            // cualquier caracter hace que el ELM deje lo que esperaba y vuelva a ">" (contesta STOPPED).
+            // Solo si ni así contesta se cierra el socket (antes se cerraba de una: varios segundos sin datos).
             val watchdog = launch {
                 delay(timeoutMs)
+                runCatching {
+                    out.write(" ".toByteArray(Charsets.US_ASCII))
+                    out.flush()
+                }
+                delay(NUDGE_GRACE_MS)
                 timedOut = true
                 runCatching { s.close() }
             }
@@ -102,6 +123,7 @@ class BluetoothSppTransport(private val context: Context, private val address: S
     }
 
     override suspend fun close() = withContext(Dispatchers.IO) {
+        closed = true
         runCatching { socket?.close() }
         socket = null
         input = null
@@ -110,5 +132,7 @@ class BluetoothSppTransport(private val context: Context, private val address: S
 
     companion object {
         val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+        /** Lo que se espera después del empujón antes de dar la conexión por perdida. */
+        private const val NUDGE_GRACE_MS = 1_000L
     }
 }

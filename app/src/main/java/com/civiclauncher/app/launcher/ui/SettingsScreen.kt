@@ -599,6 +599,16 @@ private fun ObdSettings() {
             tone = if (tone == Tone.Bad) Tone.Warn else Tone.Neutral,
         ) { picker = true }
         if (config.mode != ObdMode.NONE) {
+            val ctx = LocalContext.current
+            SettingRow(
+                P.Wrench,
+                "Guardar registro del OBD",
+                "Las últimas preguntas al adaptador y sus respuestas, para revisar una falla. Se guarda en la pantalla.",
+                showChevron = false,
+            ) {
+                val file = repo.exportLog()
+                Toast.makeText(ctx, if (file != null) "Guardado en Android/data/${ctx.packageName}/files/${file.name}" else "No se pudo guardar el registro", Toast.LENGTH_LONG).show()
+            }
             SettingRow(P.Power, "Desconectar OBD", "Deja de buscar el adaptador y apaga la notificación", showChevron = false) { repo.disable() }
         }
     }

@@ -9,7 +9,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.coroutines.coroutineContext
@@ -63,6 +65,11 @@ class ObdEngine(
     private val scope: CoroutineScope,
     private val clock: () -> Long = System::currentTimeMillis,
     private val config: Config = Config(),
+    private val log: ObdLog? = null,
+    /** El protocolo con el que el carro contestó la vez pasada, para probarlo primero. */
+    private val protocolHint: () -> String? = { null },
+    /** Se llama cuando el carro contesta, para recordar su protocolo. */
+    private val onProtocol: (String) -> Unit = {},
 ) {
     data class Config(
         val minCycleMs: Long = 80,
@@ -70,6 +77,13 @@ class ObdEngine(
         val backgroundCycleMs: Long = 500,
         val carOffRetryMs: Long = 5_000,
         val maxBackoffMs: Long = 30_000,
+        /**
+         * Tras tantos intentos fallidos seguidos (adaptador quitado), se espera mucho más entre
+         * intentos: cada uno ocupa la radio Bluetooth y puede cortar la música del celular.
+         * Encender la pantalla vuelve a intentar enseguida ([retryNow]).
+         */
+        val longBackoffAfter: Int = 6,
+        val longBackoffMs: Long = 300_000,
         /** Vueltas seguidas sin respuesta del carro antes de decidir que se apagó. */
         val silentCyclesForCarOff: Int = 3,
     )
@@ -93,8 +107,19 @@ class ObdEngine(
     @Volatile var demand: PollDemand = PollDemand.LIVE
 
     private var job: Job? = null
+    @Volatile private var transport: ObdTransport? = null
+    private val kick = MutableStateFlow(0)
+
+    private val _readRate = MutableStateFlow(0f)
+    /** Vueltas completas por segundo (cada una lee RPM y velocidad). 0 sin conexión. */
+    val readRate: StateFlow<Float> = _readRate.asStateFlow()
 
     val isRunning: Boolean get() = job?.isActive == true
+
+    /** Si está esperando para reintentar la conexión, que intente ya. */
+    fun retryNow() {
+        kick.value++
+    }
 
     fun start() {
         if (isRunning) return
@@ -104,6 +129,10 @@ class ObdEngine(
     fun stop() {
         job?.cancel()
         job = null
+        // Una lectura o conexión de Bluetooth trabada no se entera de la cancelación: cerrar el canal
+        // la suelta (antes se quedaba abierto y la siguiente conexión chocaba con él).
+        transport?.let { t -> scope.launch(NonCancellable) { runCatching { t.close() } } }
+        _readRate.value = 0f
         _state.value = EngineState.Stopped
     }
 
@@ -114,9 +143,11 @@ class ObdEngine(
             try {
                 // Dentro del try: si crear la conexión falla, se reintenta en vez de tumbar la app.
                 transport = transportFactory()
+                this.transport = transport
                 _state.value = EngineState.Connecting(attempt + 1)
-                val session = ElmSession(transport)
-                session.start()
+                val session = ElmSession(transport, log)
+                session.start(protocolHint())
+                log?.note("Conectado al adaptador: ${session.adapterId}")
                 attempt = 0
                 this.session = session
                 connectedLoop(session)
@@ -124,11 +155,17 @@ class ObdEngine(
                 throw e
             } catch (e: Exception) {
                 attempt++
-                val wait = (1_000L shl (attempt - 1).coerceAtMost(5)).coerceAtMost(config.maxBackoffMs)
+                val wait = if (attempt > config.longBackoffAfter) config.longBackoffMs
+                else (1_000L shl (attempt - 1).coerceAtMost(5)).coerceAtMost(config.maxBackoffMs)
                 _state.value = EngineState.Reconnecting(e.message ?: e.javaClass.simpleName, wait, attempt)
-                delay(wait)
+                log?.note("Sin conexión (${e.message ?: e.javaClass.simpleName}); reintento en ${wait / 1000} s")
+                // Se despierta antes si encienden la pantalla.
+                val seen = kick.value
+                withTimeoutOrNull(wait) { kick.first { it != seen } }
             } finally {
                 session = null
+                this.transport = null
+                _readRate.value = 0f
                 // NonCancellable: al detener el motor hay que soltar el Bluetooth aunque nos cancelen.
                 withContext(NonCancellable) { runCatching { transport?.close() } }
             }
@@ -148,6 +185,7 @@ class ObdEngine(
                 continue
             }
             _state.value = EngineState.Connected(session.adapterId, detection.protocol, detection.supported)
+            detection.protocolCode?.let(onProtocol)
             isCan = detection.protocol.startsWith("CAN")
             session.probeMultiPid(isCan, detection.supported)
             _diagnostics.update { it.copy(protocol = detection.protocol) }
@@ -156,6 +194,7 @@ class ObdEngine(
             }
             refreshDtcs(session)
             poll(session, detection.supported)
+            _readRate.value = 0f
             // poll() regresa cuando el carro deja de contestar.
             _state.value = EngineState.CarOff(session.adapterId)
         }
@@ -174,6 +213,8 @@ class ObdEngine(
         var lastDemand = demand
         /** Respuestas múltiples que llegaron incompletas (lo que faltaba sí contestó solo). */
         var cutResponses = 0
+        var rateStart = clock()
+        var rateCycles = 0
 
         while (coroutineContext.isActive) {
             val started = clock()
@@ -225,7 +266,10 @@ class ObdEngine(
                                 is ObdResult.Error -> Unit
                             }
                         }
-                        if (cut && ++cutResponses >= MAX_CUT_RESPONSES) session.disableMultiPid()
+                        if (cut && ++cutResponses >= MAX_CUT_RESPONSES) {
+                            session.disableMultiPid()
+                            log?.note("Las respuestas de varios datos llegan cortadas: se pregunta de uno en uno")
+                        }
                         continue
                     }
                     for (spec in batch) {
@@ -260,6 +304,13 @@ class ObdEngine(
             if (silentCycles >= config.silentCyclesForCarOff) return
 
             cycle++
+            rateCycles++
+            val sinceRate = clock() - rateStart
+            if (sinceRate >= RATE_WINDOW_MS) {
+                _readRate.value = rateCycles * 1000f / sinceRate
+                rateStart = clock()
+                rateCycles = 0
+            }
             val elapsed = clock() - started
             val minCycle = if (want == PollDemand.BACKGROUND) config.backgroundCycleMs else config.minCycleMs
             if (elapsed < minCycle) delay(minCycle - elapsed)
@@ -336,15 +387,21 @@ class ObdEngine(
         val MEDIUM = listOf(
             Pids.TIMING_ADVANCE, Pids.SHORT_FUEL_TRIM_1, Pids.LONG_FUEL_TRIM_1, Pids.FUEL_RATE, Pids.REL_THROTTLE,
             Pids.PEDAL_D, Pids.COMMANDED_THROTTLE, Pids.ABS_LOAD, Pids.O2_B1S1, Pids.O2_B1S2, Pids.COMMANDED_AFR,
+            // Cambia rápido al soltar el acelerador (corte de inyección): cada 10 vueltas llegaba tarde.
+            Pids.FUEL_SYSTEM,
+            // El sensor de mezcla de banda ancha (el de tu Civic antes del catalizador).
+            Pids.O2_WIDE_LAMBDA, Pids.O2_WIDE_CURRENT,
         )
         /** Cada 10 vueltas: temperaturas, voltajes, estado. */
         val SLOW = listOf(
             Pids.COOLANT_TEMP, Pids.INTAKE_AIR_TEMP, Pids.MODULE_VOLTAGE, Pids.BAROMETRIC, Pids.AMBIENT_TEMP,
-            Pids.FUEL_LEVEL, Pids.OIL_TEMP, Pids.CATALYST_TEMP, Pids.MONITOR_STATUS, Pids.FUEL_SYSTEM,
+            Pids.FUEL_LEVEL, Pids.OIL_TEMP, Pids.CATALYST_TEMP, Pids.MONITOR_STATUS,
             Pids.EVAP_PURGE, Pids.FUEL_PRESSURE,
         )
         /** Cada 60 vueltas: contadores que cambian muy poco. */
         val RARE = listOf(Pids.RUN_TIME, Pids.DIST_WITH_MIL, Pids.DIST_SINCE_CLEAR, Pids.TIME_WITH_MIL, Pids.TIME_SINCE_CLEAR, Pids.ODOMETER)
+        private const val RATE_WINDOW_MS = 5_000L
+
         /** Respuestas múltiples cortadas antes de dejar de usarlas (se pierde velocidad, no datos). */
         private const val MAX_CUT_RESPONSES = 2
 
@@ -358,6 +415,8 @@ class ObdEngine(
             Pids.FUEL_SYSTEM, Pids.MONITOR_STATUS, Pids.DIST_SINCE_CLEAR,
             // El aire que calcula la propia computadora y la mezcla que pide: dan un consumo más exacto.
             Pids.ABS_LOAD, Pids.COMMANDED_AFR,
+            // Si el carro lo da, es la base de la autonomía.
+            Pids.FUEL_LEVEL,
         ).map { it.pid }.toSet()
         private const val DTC_REFRESH_MS = 120_000L
     }

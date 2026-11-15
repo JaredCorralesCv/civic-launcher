@@ -83,6 +83,10 @@ object Pids {
     // ---- Emisiones
     val O2_B1S1 = PidSpec(0x14, "Sensor de oxígeno 1 (antes)", "V", 2, PidGroup.EMISSIONS, 2) { it[0] / 200.0 }
     val O2_B1S2 = PidSpec(0x15, "Sensor de oxígeno 2 (después)", "V", 2, PidGroup.EMISSIONS, 2) { it[0] / 200.0 }
+    /** Sensor de mezcla de banda ancha 1: lambda (1.00 = mezcla exacta; menos = rica). */
+    val O2_WIDE_LAMBDA = PidSpec(0x24, "Sensor de mezcla (lambda)", "λ", 4, PidGroup.EMISSIONS, 2) { word(it) * 2.0 / 65536 }
+    /** El mismo sensor: corriente de bombeo (0 mA = mezcla exacta). */
+    val O2_WIDE_CURRENT = PidSpec(0x34, "Sensor de mezcla (corriente)", "mA", 4, PidGroup.EMISSIONS, 2) { (it[2] * 256 + it[3]) / 256.0 - 128 }
     val EVAP_PURGE = PidSpec(0x2E, "Purga del canister", "%", 1, PidGroup.EMISSIONS) { it[0] * 100.0 / 255 }
 
     val all: List<PidSpec> = listOf(
@@ -92,7 +96,7 @@ object Pids {
         SHORT_FUEL_TRIM_1, LONG_FUEL_TRIM_1, FUEL_PRESSURE, FUEL_LEVEL, COMMANDED_AFR, FUEL_RATE,
         COOLANT_TEMP, INTAKE_AIR_TEMP, AMBIENT_TEMP, CATALYST_TEMP, OIL_TEMP,
         MODULE_VOLTAGE,
-        O2_B1S1, O2_B1S2, EVAP_PURGE,
+        O2_B1S1, O2_B1S2, O2_WIDE_LAMBDA, O2_WIDE_CURRENT, EVAP_PURGE,
     )
 
     fun byPid(pid: Int): PidSpec? = all.firstOrNull { it.pid == pid }
