@@ -149,7 +149,7 @@ class ObdEngine(
             }
             _state.value = EngineState.Connected(session.adapterId, detection.protocol, detection.supported)
             isCan = detection.protocol.startsWith("CAN")
-            session.probeMultiPid(isCan)
+            session.probeMultiPid(isCan, detection.supported)
             _diagnostics.update { it.copy(protocol = detection.protocol) }
             if (_diagnostics.value.vin == null) {
                 session.readVin()?.let { vin -> _diagnostics.update { it.copy(vin = vin) } }
@@ -172,6 +172,8 @@ class ObdEngine(
         var silentCycles = 0
         var cycle = 0L
         var lastDemand = demand
+        /** Respuestas múltiples que llegaron incompletas (lo que faltaba sí contestó solo). */
+        var cutResponses = 0
 
         while (coroutineContext.isActive) {
             val started = clock()
@@ -205,7 +207,25 @@ class ObdEngine(
                     asked += batch.size
                     val many = if (batch.size > 1) session.queryMany(batch) else null
                     if (many != null) {
-                        batch.forEach { spec -> many[spec.pid]?.let { answer(spec, it) } ?: missing.add(spec) }
+                        var cut = false
+                        for (spec in batch) {
+                            val value = many[spec.pid]
+                            if (value != null) {
+                                answer(spec, value)
+                                continue
+                            }
+                            // Faltó en la respuesta múltiple: antes de darlo por inexistente se pide solo.
+                            // Así un adaptador que corta respuestas largas no deja datos mudos para siempre.
+                            when (val r = session.query(spec)) {
+                                is ObdResult.Value -> {
+                                    answer(spec, r.value)
+                                    cut = true
+                                }
+                                ObdResult.NoData -> missing.add(spec)
+                                is ObdResult.Error -> Unit
+                            }
+                        }
+                        if (cut && ++cutResponses >= MAX_CUT_RESPONSES) session.disableMultiPid()
                         continue
                     }
                     for (spec in batch) {
@@ -325,6 +345,9 @@ class ObdEngine(
         )
         /** Cada 60 vueltas: contadores que cambian muy poco. */
         val RARE = listOf(Pids.RUN_TIME, Pids.DIST_WITH_MIL, Pids.DIST_SINCE_CLEAR, Pids.TIME_WITH_MIL, Pids.TIME_SINCE_CLEAR, Pids.ODOMETER)
+        /** Respuestas múltiples cortadas antes de dejar de usarlas (se pierde velocidad, no datos). */
+        private const val MAX_CUT_RESPONSES = 2
+
         /**
          * Fuera de [FAST], lo que usan los cálculos (consumo, avisos, códigos) y lo que se ve fuera de
          * Sensores. El resto (sondas, ajustes de combustible, purga, catalizador…) se pide solo con
@@ -333,6 +356,8 @@ class ObdEngine(
         val ALWAYS = setOf(
             Pids.FUEL_RATE, Pids.COOLANT_TEMP, Pids.INTAKE_AIR_TEMP, Pids.AMBIENT_TEMP, Pids.OIL_TEMP,
             Pids.FUEL_SYSTEM, Pids.MONITOR_STATUS, Pids.DIST_SINCE_CLEAR,
+            // El aire que calcula la propia computadora y la mezcla que pide: dan un consumo más exacto.
+            Pids.ABS_LOAD, Pids.COMMANDED_AFR,
         ).map { it.pid }.toSet()
         private const val DTC_REFRESH_MS = 120_000L
     }

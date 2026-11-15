@@ -453,7 +453,8 @@ internal fun PerformanceScreen(d: DriveValues, live: Boolean, modifier: Modifier
     val timerOn by c.launcherPrefs.accelTimer.collectAsStateWithLifecycle()
     if (live && timerOn) {
         LaunchedEffect(d.speed) {
-            if (t.update(d.speed, android.os.SystemClock.elapsedRealtime())) c.launcherPrefs.best0to100Ms = t.best
+            // Con el simulador del OBD no se guarda el récord: no es tu carro.
+            if (t.update(d.speed, android.os.SystemClock.elapsedRealtime()) && c.obd.config.value.mode != com.civiclauncher.app.launcher.obd.ObdMode.SIMULATOR) c.launcherPrefs.best0to100Ms = t.best
         }
         // El tiempo corre en pantalla solo mientras se está midiendo; el resultado se queda 20 s.
         LaunchedEffect(t.phase) {

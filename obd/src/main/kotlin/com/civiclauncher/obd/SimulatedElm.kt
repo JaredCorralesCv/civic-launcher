@@ -22,6 +22,8 @@ class SimulatedElm(
     private val multiPid: Boolean = true,
     /** Entiende el "1" al final para responder rápido (ELM327 v1.3+). Falso = clon viejo. */
     private val fastReply: Boolean = true,
+    /** Imita un adaptador barato que solo entrega la primera trama de una respuesta larga. */
+    private val cutLongReplies: () -> Boolean = { false },
 ) : ObdTransport {
     private val startedAt = clockMs()
     private var open = false
@@ -59,8 +61,10 @@ class SimulatedElm(
         if (!cmd.startsWith("01")) return "?"
         // "010C1": la cantidad de respuestas esperadas al final (número impar de cifras).
         var body = cmd.substring(2)
+        var frames: Int? = null
         if (body.length % 2 == 1) {
             if (!fastReply) return "?"
+            frames = body.last().digitToInt(16)
             body = body.dropLast(1)
         }
         val pids = body.chunked(2).map { it.toIntOrNull(16) ?: return "?" }
@@ -69,9 +73,28 @@ class SimulatedElm(
             if (!multiPid) return "NO DATA"
             // Cada PID que exista: su número y sus datos. Los que no existen simplemente no vienen.
             val parts = pids.mapNotNull { p -> single(p)?.removePrefix("41") }
-            return if (parts.isEmpty()) "NO DATA" else "41" + parts.joinToString("")
+            return if (parts.isEmpty()) "NO DATA" else canFrames("41" + parts.joinToString(""), frames)
         }
         return single(pids[0]) ?: "NO DATA"
+    }
+
+    /**
+     * Como un carro CAN real: más de 7 bytes van en varias tramas ("0:", "1:"…). Y como un ELM real,
+     * con la cantidad de respuestas al final del comando se detiene tras esas tramas.
+     */
+    private fun canFrames(hex: String, limit: Int?): String {
+        val bytes = hex.chunked(2)
+        if (bytes.size <= 7) return hex
+        val lines = mutableListOf("%03X".format(bytes.size), "0:" + bytes.take(6).joinToString(""))
+        bytes.drop(6).chunked(7).forEachIndexed { i, chunk ->
+            lines += "%X:".format((i + 1) % 16) + chunk.joinToString("") + "00".repeat(7 - chunk.size)
+        }
+        val keep = when {
+            cutLongReplies() -> 2
+            limit == null -> lines.size
+            else -> 1 + limit
+        }
+        return lines.take(keep).joinToString("\r")
     }
 
     /** Respuesta a un solo PID ("410C1AF8"), o null si este "carro" no lo tiene. */
@@ -137,11 +160,13 @@ class SimulatedElm(
         val driving = phase < 40
         val speed = if (driving) max(0.0, 45 + 25 * sin(phase / 40 * 2 * PI) * sin(phase / 7)) else 0.0
         val throttle = if (driving) 15 + speed / 3 else 0.0
+        // Como el automático de 5 velocidades de tu Civic (RPM por km/h de cada marcha).
         val gearRatio = when {
-            speed < 20 -> 110.0
-            speed < 40 -> 65.0
-            speed < 60 -> 45.0
-            else -> 35.0
+            speed < 20 -> 99.3
+            speed < 40 -> 57.1
+            speed < 60 -> 38.1
+            speed < 80 -> 26.9
+            else -> 19.6
         }
         val rpm = if (driving) max(800.0, speed * gearRatio) else 750.0
         // Se calienta de 25 °C a 90 °C en los primeros 5 minutos.

@@ -6,8 +6,11 @@ import kotlin.math.abs
  * Consumo de gasolina a partir de lo que dé el carro, en orden de precisión:
  *  1. PID 5E (litros por hora, pocos carros lo tienen),
  *  2. flujo de aire MAF (PID 10),
- *  3. "densidad de velocidad": presión del múltiple + RPM + temperatura de admisión. Es lo que
- *     tiene tu Civic 2008 (motor R18 de 1.8 L, con sensor MAP y sin MAF).
+ *  3. carga absoluta (PID 43): el aire por ciclo que calcula la propia computadora, ya con el
+ *     tiempo de válvulas del R18 (en crucero mete menos aire del que la presión sugiere),
+ *  4. "densidad de velocidad": presión del múltiple + RPM + temperatura de admisión, con una
+ *     eficiencia fija. Tu Civic 2008 (R18 de 1.8 L) tiene sensor MAP y no MAF.
+ * Si el carro da la mezcla que pide (PID 44), se usa: en frío y a fondo es más rica que 14.7.
  * Gasolina: mezcla estequiométrica 14.7:1 y densidad 0.745 kg/L.
  */
 object FuelModel {
@@ -17,12 +20,18 @@ object FuelModel {
     private const val AFR = 14.7
     private const val FUEL_DENSITY_G_PER_L = 745.0
     private const val R_AIR = 287.05
+    /** Gramos por litro de aire a 25 °C y 1 atm: la referencia de la carga absoluta (SAE J1979). */
+    private const val AIR_G_PER_L_STP = 1.184
 
     /** Gramos de aire por segundo. */
     fun airFlow(data: VehicleData, nowMs: Long): Double? {
         data[Pids.MAF].freshAt(nowMs)?.let { return it.value }
-        val map = data[Pids.INTAKE_MAP].freshAt(nowMs)?.value ?: return null
         val rpm = data[Pids.RPM].freshAt(nowMs)?.value ?: return null
+        data[Pids.ABS_LOAD].freshAt(nowMs)?.value?.takeIf { it > 0 }?.let { absLoad ->
+            // Carga absoluta = aire por ciclo / (1.184 g/L × cilindrada). Un ciclo son 2 vueltas.
+            return absLoad / 100.0 * AIR_G_PER_L_STP * DISPLACEMENT_L * (rpm / 120.0)
+        }
+        val map = data[Pids.INTAKE_MAP].freshAt(nowMs)?.value ?: return null
         val iat = data[Pids.INTAKE_AIR_TEMP].freshAt(nowMs, 30_000)?.value ?: 30.0
         // m = P·V·VE / (R·T) por cada 2 vueltas (motor de 4 tiempos).
         val kgPerIntake = map * 1000 * (DISPLACEMENT_L / 1000) * VOLUMETRIC_EFFICIENCY / (R_AIR * (iat + 273.15))
@@ -40,7 +49,8 @@ object FuelModel {
         val speed = data[Pids.SPEED].freshAt(nowMs)?.value ?: 0.0
         val load = data[Pids.ENGINE_LOAD].freshAt(nowMs)?.value
         if (speed > 20 && rpm != null && rpm > 1_300 && (load != null && load < 12) && (throttle == null || throttle < 16)) return 0.0
-        return air / AFR / FUEL_DENSITY_G_PER_L * 3600
+        val lambda = data[Pids.COMMANDED_AFR].freshAt(nowMs)?.value?.takeIf { it in 0.7..1.3 } ?: 1.0
+        return air / (AFR * lambda) / FUEL_DENSITY_G_PER_L * 3600
     }
 
     /** Kilómetros por litro al instante (lo que se usa en México). null si va detenido. */
@@ -55,12 +65,22 @@ object FuelModel {
 
 /**
  * Marcha estimada por la relación RPM/velocidad. Valores del Civic 2008 (1.8 L, llanta 205/55R16,
- * ~1.99 m de circunferencia), manual de 5 velocidades. Con automática sale parecido.
- * null si el clutch está pisado, va en neutral o se está cambiando.
+ * ~1.99 m de circunferencia), automático de 5 velocidades (2.666, 1.534, 1.022, 0.721 y 0.525, con
+ * diferencial de 4.437). null si va en neutral, se está cambiando o el convertidor patina de más.
  */
 object GearEstimator {
-    /** RPM por cada km/h en cada marcha. */
-    private val RPM_PER_KMH = doubleArrayOf(117.8, 67.8, 43.7, 33.2, 26.6)
+    /** RPM por cada km/h en cada marcha (antes era la tabla de la manual: en tu automático no cuadraba la 1a). */
+    private val RPM_PER_KMH = doubleArrayOf(99.3, 57.1, 38.1, 26.9, 19.6)
+
+    /** Cambia si cambia la tabla: así no se cargan relaciones aprendidas con otra. */
+    const val TABLE_ID = "at5"
+
+    /**
+     * Margen para decir "esta marcha": 12 % (el convertidor de torque patina un poco al acelerar), más
+     * lo que mueve la velocidad entera del OBD (±1 km/h pesa mucho más a 10 km/h que a 80). Gana la
+     * marcha más cercana; el margen solo descarta lo que no cuadra con ninguna.
+     */
+    internal fun tolerance(speedKmh: Double): Double = (0.12 + 1.0 / speedKmh).coerceAtMost(0.25)
 
     /** Tabla de fábrica (copia), punto de partida de [GearTracker]. */
     fun defaultRatios(): DoubleArray = RPM_PER_KMH.copyOf()
@@ -71,7 +91,7 @@ object GearEstimator {
         val best = RPM_PER_KMH.indices.minBy { abs(RPM_PER_KMH[it] - ratio) }
         val error = abs(RPM_PER_KMH[best] - ratio) / RPM_PER_KMH[best]
         // 8 %: más flojo confundiría el clutch pisado con la marcha de al lado.
-        return if (error < 0.08) best + 1 else null
+        return if (error < tolerance(speedKmh)) best + 1 else null
     }
 }
 
@@ -143,6 +163,9 @@ data class TimeMark(val bootId: String, val elapsedMs: Long, val wallMs: Long) {
         else (now.wallMs - wallMs).coerceAtLeast(0)
 }
 
+/** Con el motor encendido y por debajo de esto un buen rato, el alternador no está cargando. */
+const val CHARGE_WARN_V = 12.2
+
 /** Avisos que conviene mostrar mientras manejas. */
 enum class AlertLevel { INFO, WARN, DANGER }
 
@@ -156,7 +179,9 @@ object VehicleAlerts {
         if (diag.milOn) add(VehicleAlert("mil", AlertLevel.WARN, "Foco Check Engine encendido", "${diag.stored.size.coerceAtLeast(diag.dtcCount)} código(s) de falla. Revisa Diagnóstico."))
         if (coolant != null && coolant >= 108) add(VehicleAlert("hot", AlertLevel.DANGER, "Motor sobrecalentado", "%.0f °C. Oríllate y apaga el motor.".format(coolant)))
         else if (coolant != null && coolant >= 102) add(VehicleAlert("warm", AlertLevel.WARN, "Motor muy caliente", "%.0f °C. Vigila la temperatura.".format(coolant)))
-        if (battery != null && rpm != null && rpm > 500 && battery < 13.0) add(VehicleAlert("charge", AlertLevel.WARN, "La batería no está cargando", "%.1f V con el motor encendido. Revisa el alternador.".format(battery)))
+        // Los Honda de esos años bajan el alternador a propósito (~12.4-12.8 V) con poca carga eléctrica,
+        // y el voltaje lo mide el adaptador (±0.3 V): con 13.0 V el aviso salía sin falla de verdad.
+        if (battery != null && rpm != null && rpm > 500 && battery < CHARGE_WARN_V) add(VehicleAlert("charge", AlertLevel.WARN, "La batería no está cargando", "%.1f V con el motor encendido. Revisa el alternador.".format(battery)))
         if (battery != null && (rpm == null || rpm < 100) && battery < 11.9) add(VehicleAlert("lowbat", AlertLevel.WARN, "Batería baja", "%.1f V. Puede costarle arrancar.".format(battery)))
         if (rpm != null && rpm > 6_500) add(VehicleAlert("rev", AlertLevel.INFO, "RPM muy altas", "%,d rpm".format(rpm.toInt())))
     }

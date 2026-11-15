@@ -102,7 +102,7 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
     private val alertFilter = AlertFilter()
     /** Marcha que aprende las relaciones de tu carro; se guardan para la próxima vez. */
     private val gears = GearTracker(
-        tripPrefs.getString("gear_ratios", null)?.split(',')?.mapNotNull { it.toDoubleOrNull() }?.toDoubleArray()
+        tripPrefs.getString("gear_ratios", null)?.takeIf { tripPrefs.getString("gear_table", null) == com.civiclauncher.obd.GearEstimator.TABLE_ID }?.split(',')?.mapNotNull { it.toDoubleOrNull() }?.toDoubleArray()
             ?: com.civiclauncher.obd.GearEstimator.defaultRatios(),
     )
     private val bootId by lazy { runCatching { java.io.File("/proc/sys/kernel/random/boot_id").readText().trim() }.getOrDefault("") }
@@ -128,16 +128,26 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
             .putLong("last_running", lastRunning?.wallMs ?: 0L)
             .putLong("last_running_e", lastRunning?.elapsedMs ?: 0L)
             .putString("last_boot", lastRunning?.bootId)
+            .putString("gear_table", com.civiclauncher.obd.GearEstimator.TABLE_ID)
             .putString("gear_ratios", gears.learned.joinToString(",") { "%.2f".format(java.util.Locale.US, it) })
             .apply()
     }
+
+    // El simulador tiene su propio viaje y sus propias marchas, que no se guardan: antes llenaba el viaje
+    // real con kilómetros inventados y "aprendía" relaciones de un carro que no existe.
+    private val simTrip = TripComputer()
+    private val simGears = GearTracker()
+    private val simulating: Boolean get() = _config.value.mode == ObdMode.SIMULATOR
 
     private fun onData(d: VehicleData) {
         // El mismo reloj que las lecturas (ver apply): no salta cuando el GPS corrige la hora.
         val now = SystemClock.elapsedRealtime()
         val wall = System.currentTimeMillis()
+        val sim = simulating
+        val trip = if (sim) simTrip else trip
+        val gears = if (sim) simGears else gears
         val running = (d[Pids.RPM].freshAt(now)?.value ?: 0.0) > 300
-        if (running) {
+        if (running && !sim) {
             val mark = TimeMark(bootId, now, wall)
             // Más de 30 min con el motor apagado = viaje nuevo (como la computadora de muchos carros).
             if (lastRunning?.let { it.msUntil(mark) > NEW_TRIP_AFTER_MS } == true) trip.reset()
@@ -150,7 +160,7 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
             lastTripPublish = now
             _tripStats.value = s
         }
-        if (now - lastSaveMs > 15_000) {
+        if (!sim && now - lastSaveMs > 15_000) {
             lastSaveMs = now
             saveTrip(s)
         }
@@ -169,6 +179,11 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
     fun resetTrip() {
         // En el mismo hilo que los cálculos, para no reiniciar el viaje a media suma.
         scope.launch(calc) {
+            if (simulating) {
+                simTrip.reset()
+                _tripStats.value = simTrip.stats
+                return@launch
+            }
             trip.reset()
             _tripStats.value = trip.stats
             saveTrip(trip.stats)
@@ -212,7 +227,10 @@ class ObdRepository(private val context: Context, private val scope: CoroutineSc
 
     private fun setConfig(c: ObdConfig) {
         sp.edit().putString("mode", c.mode.name).putString("address", c.address).putString("name", c.name).apply()
+        val wasSim = _config.value.mode == ObdMode.SIMULATOR
         _config.value = c
+        // Al dejar el simulador, la pantalla vuelve a mostrar el viaje de verdad.
+        if (wasSim && c.mode != ObdMode.SIMULATOR) scope.launch(calc) { _tripStats.value = trip.stats }
         engine.value?.stop()
         engine.value = null
         if (c.mode == ObdMode.NONE) ObdService.stop(context) else ObdService.start(context)

@@ -63,9 +63,14 @@ class ElmSession(private val transport: ObdTransport) {
     var multiPid: Boolean = false
         private set
 
-    private suspend fun ask(command: String, timeoutMs: Long = 3_000): String {
+    /**
+     * [frames]: cuántas tramas trae la respuesta. Con varios PIDs la respuesta ocupa varias tramas, y
+     * el ELM se detiene en la cantidad que se le diga: con "1" se perdían todos los datos menos los
+     * dos primeros (en tu Civic: el acelerador y la carga nunca llegaban).
+     */
+    private suspend fun ask(command: String, timeoutMs: Long = 3_000, frames: Int = 1): String {
         if (fastReply) {
-            val r = transport.send(command + "1", timeoutMs)
+            val r = transport.send(command + frames.coerceIn(1, 15).toString(16).uppercase(), timeoutMs)
             if (ElmParser.cleanLines(r).none { it == "?" }) return r
             fastReply = false
         }
@@ -83,19 +88,28 @@ class ElmSession(private val transport: ObdTransport) {
     suspend fun queryMany(specs: List<PidSpec>): Map<Int, Double>? = lock.withLock {
         require(specs.size in 1..MAX_MULTI)
         val command = "01" + specs.joinToString("") { "%02X".format(it.pid) }
-        ElmParser.parseMulti(ask(command), specs)
+        ElmParser.parseMulti(ask(command, frames = framesFor(specs)), specs)
     }
 
     /**
-     * Prueba una vez si el carro contesta varios PIDs juntos (RPM + velocidad, que todos tienen).
-     * Solo en CAN: en los protocolos viejos (ISO 9141, KWP) no existe.
+     * Prueba una vez si el carro y el adaptador contestan varios PIDs juntos. Solo en CAN: en los
+     * protocolos viejos (ISO 9141, KWP) no existe. Se prueba con una pregunta que ocupa DOS tramas,
+     * como las del sondeo real: RPM y velocidad caben en una, y justo en las de varias tramas es
+     * donde los adaptadores baratos cortan la respuesta.
      */
-    suspend fun probeMultiPid(can: Boolean): Boolean {
+    suspend fun probeMultiPid(can: Boolean, supported: Set<Int> = emptySet()): Boolean {
         multiPid = false
         if (!can) return false
-        val r = runCatching { queryMany(listOf(Pids.RPM, Pids.SPEED)) }.getOrNull()
-        multiPid = r != null && r.containsKey(Pids.RPM.pid) && r.containsKey(Pids.SPEED.pid)
+        val wide = PROBE.filter { supported.isEmpty() || it.pid in supported }.take(4)
+        val test = if (wide.size >= 4) wide else listOf(Pids.RPM, Pids.SPEED)
+        val r = runCatching { queryMany(test) }.getOrNull()
+        multiPid = r != null && test.all { r.containsKey(it.pid) }
         return multiPid
+    }
+
+    /** Las respuestas múltiples llegaron incompletas aunque la prueba pasó: de aquí en adelante, de uno en uno. */
+    fun disableMultiPid() {
+        multiPid = false
     }
 
     suspend fun batteryVoltage(): ObdResult = lock.withLock {
@@ -132,5 +146,14 @@ class ElmSession(private val transport: ObdTransport) {
         val INIT_COMMANDS = listOf("ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATSP0")
         /** El estándar (ISO 15765-4) permite hasta 6 PIDs por pregunta. */
         const val MAX_MULTI = 6
+
+        /** Para la prueba: los primeros 4 que el carro tenga ocupan dos tramas. */
+        private val PROBE = listOf(Pids.RPM, Pids.SPEED, Pids.COOLANT_TEMP, Pids.ENGINE_LOAD, Pids.THROTTLE, Pids.INTAKE_MAP)
+
+        /** Tramas CAN de la respuesta: el modo (41) más cada PID con sus datos; 7 bytes en la primera si cabe todo, si no 6 y luego de 7 en 7. */
+        internal fun framesFor(specs: List<PidSpec>): Int {
+            val length = 1 + specs.sumOf { 1 + it.bytes }
+            return if (length <= 7) 1 else 1 + (length - 6 + 6) / 7
+        }
     }
 }

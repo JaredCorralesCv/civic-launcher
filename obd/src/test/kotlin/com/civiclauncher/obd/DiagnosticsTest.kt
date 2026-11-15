@@ -66,11 +66,33 @@ class DiagnosticsTest {
     }
 
     @Test
+    fun `consumo con la carga absoluta y la mezcla de la computadora`() {
+        val now = 10_000L
+        fun data(vararg v: Pair<PidSpec, Double>) = VehicleData(values = v.associate { (s, x) -> s.pid to Reading(x, now) })
+        // 30 % de carga absoluta a 2,000 rpm: ~10.7 g/s de aire → ~3.5 L/h con mezcla normal.
+        val normal = FuelModel.litersPerHour(data(Pids.RPM to 2_000.0, Pids.ABS_LOAD to 30.0, Pids.INTAKE_MAP to 60.0), now)!!
+        assertEquals(3.5, normal, 0.1)
+        // Mezcla rica (lambda 0.85): más gasolina por el mismo aire.
+        val rich = FuelModel.litersPerHour(data(Pids.RPM to 2_000.0, Pids.ABS_LOAD to 30.0, Pids.COMMANDED_AFR to 0.85), now)!!
+        assertEquals(normal / 0.85, rich, 0.05)
+    }
+
+    @Test
+    fun `el aviso de carga no sale con el voltaje bajo normal de Honda`() {
+        val now = 10_000L
+        fun alerts(volts: Double) = VehicleAlerts.evaluate(
+            VehicleData(values = mapOf(Pids.RPM.pid to Reading(800.0, now)), battery = Reading(volts, now)), Diagnostics(), now,
+        ).map { it.id }
+        assertFalse("charge" in alerts(12.5), "12.5 V es normal en un Honda con poca carga eléctrica")
+        assertTrue("charge" in alerts(11.8))
+    }
+
+    @Test
     fun `marcha estimada`() {
-        assertEquals(1, GearEstimator.estimate(2_350.0, 20.0))
-        assertEquals(3, GearEstimator.estimate(2_185.0, 50.0))
-        assertEquals(5, GearEstimator.estimate(2_660.0, 100.0))
-        assertNull(GearEstimator.estimate(3_000.0, 50.0), "Embragando: no coincide con ninguna marcha")
+        assertEquals(1, GearEstimator.estimate(1_990.0, 20.0))
+        assertEquals(3, GearEstimator.estimate(1_905.0, 50.0))
+        assertEquals(5, GearEstimator.estimate(1_960.0, 100.0))
+        assertNull(GearEstimator.estimate(2_400.0, 50.0), "Cambiando: no coincide con ninguna marcha")
         assertNull(GearEstimator.estimate(800.0, 0.0))
     }
 
@@ -124,10 +146,10 @@ class DiagnosticsTest {
     @Test
     fun `avisos de manejo`() {
         val now = 1_000L
-        val hot = VehicleData(mapOf(Pids.COOLANT_TEMP.pid to Reading(110.0, now), Pids.RPM.pid to Reading(900.0, now)), battery = Reading(12.4, now))
+        val hot = VehicleData(mapOf(Pids.COOLANT_TEMP.pid to Reading(110.0, now), Pids.RPM.pid to Reading(900.0, now)), battery = Reading(11.9, now))
         val alerts = VehicleAlerts.evaluate(hot, Diagnostics(milOn = true, dtcCount = 1), now)
         assertTrue(alerts.any { it.id == "hot" })
-        assertTrue(alerts.any { it.id == "charge" }, "12.4 V con el motor encendido = no carga")
+        assertTrue(alerts.any { it.id == "charge" }, "11.9 V con el motor encendido = no carga")
         assertTrue(alerts.any { it.id == "mil" })
     }
 }

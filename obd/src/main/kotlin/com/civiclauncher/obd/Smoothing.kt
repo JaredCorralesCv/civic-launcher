@@ -48,7 +48,7 @@ class AlertFilter(
     companion object {
         fun defaultOnDelay(id: String): Long = when (id) {
             // El voltaje baja un momento con cada carga eléctrica: solo si dura un minuto es de verdad.
-            "charge" -> 60_000
+            "charge" -> 120_000
             "lowbat" -> 10_000
             "warm" -> 5_000
             "hot" -> 2_000
@@ -85,7 +85,7 @@ class GearTracker(initial: DoubleArray = GearEstimator.defaultRatios()) {
     val learned: DoubleArray get() = ratios.copyOf()
 
     fun update(rpm: Double?, speedKmh: Double?, nowMs: Long): Int? {
-        val gear = if (rpm == null || speedKmh == null || speedKmh < 8 || rpm < 900) null else match(rpm / speedKmh)
+        val gear = if (rpm == null || speedKmh == null || speedKmh < 8 || rpm < 900) null else match(rpm / speedKmh, GearEstimator.tolerance(speedKmh))
         if (gear != null) {
             lastMatchAt = nowMs
             if (gear != candidate) {
@@ -100,12 +100,12 @@ class GearTracker(initial: DoubleArray = GearEstimator.defaultRatios()) {
         return shown
     }
 
-    private fun match(ratio: Double): Int? {
+    private fun match(ratio: Double, tolerance: Double): Int? {
         steady = if (previousRatio > 0 && abs(ratio - previousRatio) / previousRatio < STEADY_ERROR) steady + 1 else 0
         previousRatio = ratio
         val best = ratios.indices.minBy { abs(ratios[it] - ratio) }
         val error = abs(ratios[best] - ratio) / ratios[best]
-        if (error >= MATCH_ERROR) return null
+        if (error >= tolerance) return null
         if (steady >= STEADY_READINGS) {
             ratios[best] = (ratios[best] * (1 - LEARN_RATE) + ratio * LEARN_RATE)
                 .coerceIn(base[best] * MIN_FACTOR, base[best] * MAX_FACTOR)
@@ -118,7 +118,6 @@ class GearTracker(initial: DoubleArray = GearEstimator.defaultRatios()) {
         const val CONFIRM_MS = 400L
         /** Sin coincidir (clutch pisado, cambiando), la marcha de antes se queda este tiempo. */
         const val HOLD_MS = 1_500L
-        const val MATCH_ERROR = 0.08
         /** "Parejo": la relación cambia menos de 1.5 % entre lecturas, varias lecturas seguidas. */
         const val STEADY_ERROR = 0.015
         const val STEADY_READINGS = 3

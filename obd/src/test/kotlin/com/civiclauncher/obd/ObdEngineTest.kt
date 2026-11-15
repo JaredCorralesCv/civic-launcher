@@ -247,6 +247,69 @@ class ObdEngineTest {
     }
 
     @Test
+    fun `varios PIDs en varias tramas llegan completos`() = runTest {
+        val e = engine()
+        e.start()
+        advanceTimeBy(5_000)
+        val d = e.data.value
+        // En el carro llegaban RPM y velocidad, pero no el acelerador ni la carga (3o y 4o del grupo).
+        assertNotNull(d[Pids.THROTTLE], "Acelerador")
+        assertNotNull(d[Pids.ENGINE_LOAD], "Carga")
+        assertNotNull(d[Pids.INTAKE_MAP], "Presión del múltiple")
+        e.stop()
+    }
+
+    @Test
+    fun `un adaptador que corta respuestas largas no deja datos mudos`() = runTest {
+        // Corta desde el principio: la prueba de dos tramas lo detecta y se pregunta de uno en uno.
+        val clock = { testScheduler.currentTime }
+        val e = ObdEngine({ SimulatedElm(latencyMs = 20, clockMs = clock, cutLongReplies = { true }) }, backgroundScope, clock)
+        e.start()
+        advanceTimeBy(8_000)
+        assertNotNull(e.data.value[Pids.THROTTLE], "Acelerador")
+        assertNotNull(e.data.value[Pids.ENGINE_LOAD], "Carga")
+        e.stop()
+    }
+
+    @Test
+    fun `si empieza a cortar despues de la prueba se recupera`() = runTest {
+        val clock = { testScheduler.currentTime }
+        var cutting = false
+        var spy: SpyTransport? = null
+        val e = ObdEngine({ SpyTransport(SimulatedElm(latencyMs = 20, clockMs = clock, cutLongReplies = { cutting })).also { spy = it } }, backgroundScope, clock)
+        e.start()
+        advanceTimeBy(5_000)
+        cutting = true
+        val since = testScheduler.currentTime
+        advanceTimeBy(6_000)
+        val throttle = e.data.value[Pids.THROTTLE]
+        assertNotNull(throttle)
+        assertTrue(throttle!!.atMs > since + 4_000, "El acelerador sigue llegando aunque las respuestas largas vengan cortadas")
+        // Y deja de preguntar de varios en varios (sería pedir dos veces cada vuelta).
+        val last = spy!!.commands.takeLast(20)
+        assertTrue(last.none { it.startsWith("01") && it.length > 7 }, "Ya pregunta de uno en uno: $last")
+        e.stop()
+    }
+
+    @Test
+    fun `cuantas tramas trae cada pregunta`() {
+        assertEquals(1, ElmSession.framesFor(listOf(Pids.RPM, Pids.SPEED)))
+        assertEquals(2, ElmSession.framesFor(listOf(Pids.RPM, Pids.SPEED, Pids.THROTTLE, Pids.ENGINE_LOAD)))
+        assertEquals(2, ElmSession.framesFor(listOf(Pids.RPM, Pids.SPEED, Pids.THROTTLE, Pids.ENGINE_LOAD, Pids.INTAKE_MAP)))
+    }
+
+    @Test
+    fun `primera marcha a poca velocidad`() {
+        assertEquals(1, GearEstimator.estimate(1_130.0, 10.0))
+        assertEquals(1, GearEstimator.estimate(1_300.0, 12.0))
+        val g = GearTracker()
+        var t = 0L
+        var shown: Int? = null
+        repeat(10) { shown = g.update(1_350.0, 12.0, t); t += 100 }
+        assertEquals(1, shown)
+    }
+
+    @Test
     fun `los PIDs soportados se leen bien`() {
         // Ejemplo típico de un Honda: 0100 → BE 3E B8 13
         val s = ElmParser.parseSupported("4100BE3EB813\r\r>", 0x00)!!
